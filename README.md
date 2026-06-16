@@ -52,6 +52,20 @@ Exit code policy:
 - `0` — final output is allowed by current readiness gate.
 - `1` — final output is blocked by open critical/high exceptions or missing approvals.
 
+Import legacy/reference V2 Step 5/6 issues into a new engagement state exception queue:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli import-v2-exceptions \
+  --step5 /path/to/v2/outputs/step5.json \
+  --step6 /path/to/v2/outputs/step6.json \
+  --output outputs/engagement_state.json \
+  --engagement-id xyz_fy2025 \
+  --entity-name "XYZ Australia Financial Trust" \
+  --entity-type discretionary_trust \
+  --fy-start 2024-07-01 \
+  --fy-end 2025-06-30
+```
+
 ## Development
 
 Run tests from the repo root:

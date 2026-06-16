@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from accountant_copilot.adapters.v2 import import_v2_exceptions
 from accountant_copilot.orchestrator.planner import build_readiness_report, plan_next_tasks
 from accountant_copilot.state.engagement import EngagementState
 
@@ -87,6 +88,35 @@ def _inspect_engagement_command(args: argparse.Namespace) -> int:
     return 0 if payload["final_output_allowed"] else 1
 
 
+def _import_v2_exceptions_command(args: argparse.Namespace) -> int:
+    exceptions = import_v2_exceptions(
+        step5_path=Path(args.step5),
+        step6_path=Path(args.step6),
+    )
+    state = EngagementState(
+        engagement_id=args.engagement_id,
+        entity_name=args.entity_name,
+        entity_type=args.entity_type,
+        fy_start=args.fy_start,
+        fy_end=args.fy_end,
+        documents_ref=args.documents_ref,
+        coa_ref=args.coa_ref,
+        bank_txns_ref=args.bank_txns_ref,
+        events_ref=args.events_ref,
+        matches_ref=str(Path(args.step5)),
+        journals_ref=str(Path(args.step6)),
+        exceptions=exceptions,
+    )
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(state.model_dump_json())
+    noun = "exception" if len(exceptions) == 1 else "exceptions"
+    print(f"Imported {len(exceptions)} V2 {noun} → {output_path}")
+    payload = inspect_engagement(state)
+    print(format_inspection(payload), end="")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="accountant-copilot",
@@ -109,6 +139,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON instead of text.",
     )
     inspect_parser.set_defaults(func=_inspect_engagement_command)
+
+    import_parser = subparsers.add_parser(
+        "import-v2-exceptions",
+        help="Import legacy V2 Step 5/6 issues into a new engagement state exception queue.",
+    )
+    import_parser.add_argument("--step5", required=True, help="Path to V2 outputs/step5.json")
+    import_parser.add_argument("--step6", required=True, help="Path to V2 outputs/step6.json")
+    import_parser.add_argument("--output", required=True, help="Where to write engagement_state.json")
+    import_parser.add_argument("--engagement-id", required=True)
+    import_parser.add_argument("--entity-name", required=True)
+    import_parser.add_argument("--fy-start", required=True)
+    import_parser.add_argument("--fy-end", required=True)
+    import_parser.add_argument("--entity-type", default=None)
+    import_parser.add_argument("--documents-ref", default=None)
+    import_parser.add_argument("--coa-ref", default=None)
+    import_parser.add_argument("--bank-txns-ref", default=None)
+    import_parser.add_argument("--events-ref", default=None)
+    import_parser.set_defaults(func=_import_v2_exceptions_command)
     return parser
 
 
