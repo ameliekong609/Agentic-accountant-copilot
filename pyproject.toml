@@ -15,6 +15,9 @@ dev = [
   "pytest>=8.0",
 ]
 
+[project.scripts]
+accountant-copilot = "accountant_copilot.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

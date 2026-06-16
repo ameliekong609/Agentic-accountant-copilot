@@ -30,15 +30,43 @@ src/accountant_copilot/
   state/             Engagement state, exceptions, decisions, preferences
 ```
 
+## CLI MVP
+
+Inspect an engagement state and see readiness, blockers, approvals needed, and the recommended next task:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli inspect-engagement \
+  --state examples/sample_engagement_state.json
+```
+
+Machine-readable output:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli inspect-engagement \
+  --state examples/sample_engagement_state.json \
+  --json
+```
+
+Exit code policy:
+
+- `0` — final output is allowed by current readiness gate.
+- `1` — final output is blocked by open critical/high exceptions or missing approvals.
+
 ## Development
 
 Run tests from the repo root:
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+PYTHONPATH=src python3.11 -m pytest -q
 ```
 
-If using pytest in a local venv:
+Compile check:
+
+```bash
+python3.11 -m compileall -q src tests
+```
+
+If using an installed local venv:
 
 ```bash
 python -m pip install -e '.[dev]'
