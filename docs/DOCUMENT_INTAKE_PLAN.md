@@ -34,7 +34,12 @@
    - captures invoice number, invoice date, due date, supplier, description, service period, subtotal, GST, amount due, page, evidence ID, and confidence
    - reports incomplete invoice-like source evidence instead of guessing missing fields
 
-6. `export-bank-continuity`
+6. `export-invoice-review`
+   - turns extracted invoice facts into accountant review findings
+   - proposes candidate treatment such as portfolio management fee/service expense, GST review, period allocation, and payment/matching handling
+   - explicitly sets `approved=false`; no accounting treatment is auto-approved from OCR or parsed invoice text
+
+7. `export-bank-continuity`
    - compares sequential bank statement closing balances to next opening balances
    - groups statements by inferred account key before comparing
    - accepts same-day or next-day period bridges, because different banks label statement boundaries differently

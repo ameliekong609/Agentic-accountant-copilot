@@ -1167,6 +1167,95 @@ def _export_invoice_facts_command(args: argparse.Namespace) -> int:
     return 0 if not payload["findings"] else 1
 
 
+def _candidate_invoice_treatment(fact: dict) -> str:
+    description = (fact.get("description") or "").lower()
+    if "portfolio" in description and "management" in description:
+        return "portfolio_management_fee_or_service_expense"
+    return "invoice_expense_or_accrual_review_required"
+
+
+def _build_invoice_review_payload(facts_payload: dict) -> dict:
+    review_findings: list[dict] = []
+    for fact in facts_payload.get("facts", []):
+        review_findings.append(
+            {
+                "category": "invoice_accounting_treatment_review_required",
+                "invoice_number": fact.get("invoice_number"),
+                "supplier": fact.get("supplier"),
+                "amount_due": fact.get("amount_due"),
+                "gst": fact.get("gst"),
+                "candidate_treatment": _candidate_invoice_treatment(fact),
+                "recommended_action": "Accountant to approve expense/accrual treatment, GST treatment, period allocation, and payment/matching handling.",
+                "approved": False,
+                "evidence_id": fact.get("evidence_id"),
+                "file_path": fact.get("file_path"),
+                "page": fact.get("page"),
+            }
+        )
+        if fact.get("confidence") == "image_ocr":
+            review_findings.append(
+                {
+                    "category": "invoice_ocr_evidence_review_required",
+                    "invoice_number": fact.get("invoice_number"),
+                    "supplier": fact.get("supplier"),
+                    "amount_due": fact.get("amount_due"),
+                    "candidate_treatment": "ocr_source_confirmation",
+                    "recommended_action": "Accountant to confirm OCR fields against the source image before relying on extracted invoice facts.",
+                    "approved": False,
+                    "evidence_id": fact.get("evidence_id"),
+                    "file_path": fact.get("file_path"),
+                    "page": fact.get("page"),
+                }
+            )
+    return {
+        "engagement_id": facts_payload.get("engagement_id"),
+        "entity_name": facts_payload.get("entity_name"),
+        "review_type": "invoice_accounting_review",
+        "review_findings": review_findings,
+        "summary": {
+            "invoices_reviewed": len(facts_payload.get("facts", [])),
+            "review_findings": len(review_findings),
+            "approved": 0,
+        },
+    }
+
+
+def _format_invoice_review(payload: dict) -> str:
+    lines = [f"# Invoice Accounting Review — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend([
+        f"- Invoices reviewed: {summary['invoices_reviewed']}",
+        f"- Review findings: {summary['review_findings']}",
+        f"- Approved automatically: {summary['approved']}",
+        "",
+    ])
+    if payload["review_findings"]:
+        lines.append("## Review findings")
+        for finding in payload["review_findings"]:
+            lines.extend([
+                f"- {finding['category']}: `{finding.get('invoice_number')}` — {finding.get('supplier')}",
+                f"  - Amount due: {finding.get('amount_due')}",
+                f"  - Candidate treatment: {finding.get('candidate_treatment')}",
+                f"  - Approved: {finding.get('approved')}",
+                f"  - Evidence: `{finding.get('evidence_id')}` from `{finding.get('file_path')}` page {finding.get('page')}",
+                f"  - Action: {finding.get('recommended_action')}",
+            ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_invoice_review_command(args: argparse.Namespace) -> int:
+    facts_payload = json.loads(Path(args.facts).read_text())
+    payload = _build_invoice_review_payload(facts_payload)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_invoice_review(payload))
+    json_output = output.with_suffix(".json")
+    json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported invoice accounting review → {output}")
+    print(f"Exported invoice accounting review JSON → {json_output}")
+    return 0 if not payload["review_findings"] else 1
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -2759,6 +2848,14 @@ def build_parser() -> argparse.ArgumentParser:
     invoice_facts_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     invoice_facts_parser.add_argument("--output", default="outputs/invoice_facts.md")
     invoice_facts_parser.set_defaults(func=_export_invoice_facts_command)
+
+    invoice_review_parser = subparsers.add_parser(
+        "export-invoice-review",
+        help="Create accountant review findings from extracted invoice facts without auto-approval.",
+    )
+    invoice_review_parser.add_argument("--facts", default="outputs/invoice_facts.json")
+    invoice_review_parser.add_argument("--output", default="outputs/invoice_review.md")
+    invoice_review_parser.set_defaults(func=_export_invoice_review_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",

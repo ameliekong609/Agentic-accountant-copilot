@@ -123,3 +123,46 @@ def test_export_invoice_facts_ignores_non_invoice_documents(tmp_path: Path):
     assert result.returncode == 0
     payload = json.loads((tmp_path / "invoice_facts.json").read_text())
     assert payload["summary"] == {"invoice_documents": 0, "facts_extracted": 0, "findings": 0}
+
+
+def test_export_invoice_review_creates_accountant_review_findings_without_approval(tmp_path: Path):
+    facts = {
+        "engagement_id": "invoice_review_test",
+        "entity_name": "Invoice Trust",
+        "fact_type": "invoice_facts",
+        "facts": [
+            {
+                "invoice_number": "INV-0082",
+                "invoice_date": "11 Dec 2024",
+                "due_date": "23/01/2025",
+                "supplier": "Emerald Family Enterprise Group Pty Ltd",
+                "description": "Portfolio Management Services",
+                "service_period_start": "01/01/2025",
+                "service_period_end": "31/12/2025",
+                "subtotal": "1,000.00",
+                "gst": "100.00",
+                "amount_due": "1,100.00",
+                "evidence_id": "raw_026_page_001",
+                "file_path": "inputs/IMG_5022.png",
+                "page": "1",
+                "confidence": "image_ocr",
+            }
+        ],
+        "findings": [],
+        "summary": {"invoice_documents": 1, "facts_extracted": 1, "findings": 0},
+    }
+    facts_path = tmp_path / "invoice_facts.json"
+    facts_path.write_text(json.dumps(facts))
+    output = tmp_path / "invoice_review.md"
+
+    result = run_cli("export-invoice-review", "--facts", str(facts_path), "--output", str(output))
+
+    assert result.returncode == 1
+    payload = json.loads((tmp_path / "invoice_review.json").read_text())
+    assert payload["summary"] == {"invoices_reviewed": 1, "review_findings": 2, "approved": 0}
+    finding_categories = {finding["category"] for finding in payload["review_findings"]}
+    assert finding_categories == {"invoice_accounting_treatment_review_required", "invoice_ocr_evidence_review_required"}
+    treatment = payload["review_findings"][0]
+    assert treatment["candidate_treatment"] == "portfolio_management_fee_or_service_expense"
+    assert treatment["approved"] is False
+    assert treatment["evidence_id"] == "raw_026_page_001"
