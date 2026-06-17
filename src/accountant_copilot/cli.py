@@ -889,6 +889,139 @@ def _export_bank_statement_facts_command(args: argparse.Namespace) -> int:
     return 0 if not payload["findings"] else 1
 
 
+_TRANSACTION_DATE_RE = re.compile(r"\b\d{2}/\d{2}/\d{2,4}\b")
+_MONEY_TOKEN_RE = re.compile(r"(?:[$€£]\s?)?[+-]?\s?\d[\d,]*(?:\.\d{2})")
+
+
+def _extract_bank_transactions_from_evidence(document: SourceDocument, evidence: EvidenceRef) -> list[dict]:
+    quote = " ".join((evidence.quote or "").split())
+    matches = list(_TRANSACTION_DATE_RE.finditer(quote))
+    transactions: list[dict] = []
+    for index, match in enumerate(matches):
+        segment_end = matches[index + 1].start() if index + 1 < len(matches) else len(quote)
+        segment = quote[match.start():segment_end].strip()
+        if re.search(r"STATEMENT OPENING BALANCE|CLOSING BALANCE", segment, re.IGNORECASE):
+            continue
+        amounts = list(_MONEY_TOKEN_RE.finditer(segment))
+        if len(amounts) < 2:
+            continue
+        transaction_amount = amounts[-2]
+        balance_amount = amounts[-1]
+        description = segment[match.end() - match.start():transaction_amount.start()].strip(" -")
+        if not description:
+            continue
+        credit = None
+        debit = None
+        if re.search(r"deposit|credit|interest|dividend", description, re.IGNORECASE):
+            credit = _clean_money_amount(transaction_amount.group(0))
+        elif re.search(r"withdrawal|debit|payment|fee|charge", description, re.IGNORECASE):
+            debit = _clean_money_amount(transaction_amount.group(0))
+        else:
+            credit = _clean_money_amount(transaction_amount.group(0))
+        transactions.append(
+            {
+                "document_id": document.document_id,
+                "file_path": document.file_path,
+                "page": evidence.page,
+                "evidence_id": evidence.evidence_id,
+                "transaction_date": match.group(0),
+                "description": description,
+                "debit": debit,
+                "credit": credit,
+                "balance": _clean_money_amount(balance_amount.group(0)),
+                "confidence": "text_pdf_pattern",
+                "snippet": segment[:300],
+            }
+        )
+    return transactions
+
+
+def _build_bank_transactions_payload(state: EngagementState) -> dict:
+    documents = {doc.document_id: doc for doc in state.source_documents if doc.document_type == "bank_statement"}
+    transactions: list[dict] = []
+    findings: list[dict] = []
+    seen_documents: set[str] = set()
+    for evidence in state.evidence:
+        if evidence.source_type != "bank_statement" or evidence.document_id not in documents:
+            continue
+        document = documents[evidence.document_id]
+        extracted = _extract_bank_transactions_from_evidence(document, evidence)
+        if extracted:
+            seen_documents.add(document.document_id)
+            transactions.extend(extracted)
+    for document_id, document in documents.items():
+        if document_id not in seen_documents:
+            findings.append(
+                {
+                    "category": "bank_transactions_not_extracted",
+                    "document_id": document.document_id,
+                    "file_path": document.file_path,
+                    "recommended_action": "Review source document and improve transaction parser or mark transactions out of scope.",
+                }
+            )
+    return {
+        "engagement_id": state.engagement_id,
+        "entity_name": state.entity_name,
+        "fact_type": "bank_transactions",
+        "transactions": transactions,
+        "findings": findings,
+        "summary": {
+            "bank_documents": len(documents),
+            "transactions_extracted": len(transactions),
+            "findings": len(findings),
+        },
+    }
+
+
+def _format_bank_transactions(payload: dict) -> str:
+    lines = [f"# Bank Transactions — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend(
+        [
+            f"- Bank documents: {summary['bank_documents']}",
+            f"- Transactions extracted: {summary['transactions_extracted']}",
+            f"- Findings: {summary['findings']}",
+            "",
+        ]
+    )
+    if payload["transactions"]:
+        lines.append("## Extracted transactions")
+        for transaction in payload["transactions"]:
+            lines.extend(
+                [
+                    f"- `{transaction['evidence_id']}` — `{transaction['transaction_date']}` — {transaction['description']}",
+                    f"  - Debit: {transaction['debit'] or 'n/a'}",
+                    f"  - Credit: {transaction['credit'] or 'n/a'}",
+                    f"  - Balance: {transaction['balance'] or 'n/a'}",
+                    f"  - Source: `{transaction['file_path']}` page {transaction['page']}",
+                ]
+            )
+        lines.append("")
+    if payload["findings"]:
+        lines.append("## Findings needing review")
+        for finding in payload["findings"]:
+            lines.extend(
+                [
+                    f"- {finding['category']}: `{finding['file_path']}`",
+                    f"  - Action: {finding['recommended_action']}",
+                ]
+            )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_bank_transactions_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    payload = _build_bank_transactions_payload(state)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_bank_transactions(payload))
+    json_output = output.with_suffix(".json")
+    json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported bank transactions → {output}")
+    print(f"Exported bank transactions JSON → {json_output}")
+    return 0 if not payload["findings"] else 1
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -2424,11 +2557,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     bank_facts_parser = subparsers.add_parser(
         "export-bank-statement-facts",
-        help="Extract bank statement periods, opening balances, and closing balances from page evidence.",
+        help="Extract bank statement periods, opening balances, closing balances, and summary totals from page evidence.",
     )
     bank_facts_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     bank_facts_parser.add_argument("--output", default="outputs/bank_statement_facts.md")
     bank_facts_parser.set_defaults(func=_export_bank_statement_facts_command)
+
+    bank_transactions_parser = subparsers.add_parser(
+        "export-bank-transactions",
+        help="Extract evidence-linked bank transaction rows from page evidence.",
+    )
+    bank_transactions_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    bank_transactions_parser.add_argument("--output", default="outputs/bank_transactions.md")
+    bank_transactions_parser.set_defaults(func=_export_bank_transactions_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",

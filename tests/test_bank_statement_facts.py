@@ -176,6 +176,64 @@ def test_export_bank_statement_facts_flags_missing_period_or_balance(tmp_path: P
     assert set(finding["missing_fields"]) == {"statement_period", "closing_balance"}
 
 
+def test_export_bank_transactions_extracts_rows_with_evidence(tmp_path: Path):
+    state = EngagementState(
+        engagement_id="bank_transactions_test",
+        entity_name="Bank Trust",
+        entity_type="trust",
+        fy_start="2024-07-01",
+        fy_end="2025-06-30",
+    )
+    state.source_documents.append(
+        SourceDocument(
+            document_id="doc_bank",
+            file_path="inputs/eStatement.pdf",
+            document_type="bank_statement",
+            entity="Bank Trust",
+            period_start="2024-07-01",
+            period_end="2025-06-30",
+            source_hash="abc123",
+        )
+    )
+    state.evidence.append(
+        EvidenceRef(
+            evidence_id="raw_004_page_001",
+            source_type="bank_statement",
+            file_path="inputs/eStatement.pdf",
+            document_id="doc_bank",
+            page="1",
+            quote=(
+                "DATE TRANSACTION DESCRIPTION DEBIT CREDIT BALANCE "
+                "06/08/24 STATEMENT OPENING BALANCE 7,434.80 "
+                "13/09/24 Deposit Benpi Qrt Dst 001324422453 3,604.23 11,039.03 "
+                "20/09/24 Deposit-Debenture/Note Interest Cap Notes 9 Dist C9S24/00114 6,476.08 17,515.11 "
+                "06/11/24 CLOSING BALANCE 17,515.11"
+            ),
+            confidence="text_pdf",
+        )
+    )
+    state_path = tmp_path / "state.json"
+    state_path.write_text(state.model_dump_json())
+    output = tmp_path / "bank_transactions.md"
+
+    result = run_cli("export-bank-transactions", "--state", str(state_path), "--output", str(output))
+
+    assert result.returncode == 0
+    text = output.read_text()
+    assert "# Bank Transactions" in text
+    payload = json.loads((tmp_path / "bank_transactions.json").read_text())
+    assert payload["summary"] == {"bank_documents": 1, "transactions_extracted": 2, "findings": 0}
+    first = payload["transactions"][0]
+    assert first["transaction_date"] == "13/09/24"
+    assert first["description"] == "Deposit Benpi Qrt Dst 001324422453"
+    assert first["credit"] == "3,604.23"
+    assert first["debit"] is None
+    assert first["balance"] == "11,039.03"
+    assert first["evidence_id"] == "raw_004_page_001"
+    assert first["confidence"] == "text_pdf_pattern"
+
+
+
 def test_export_bank_continuity_flags_balance_breaks(tmp_path: Path):
     facts_path = tmp_path / "bank_statement_facts.json"
     facts_path.write_text(

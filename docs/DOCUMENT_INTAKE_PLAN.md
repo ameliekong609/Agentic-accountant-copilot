@@ -22,7 +22,13 @@
    - links every extracted fact back to its `EvidenceRef`
    - reports missing period/opening/closing balance findings instead of guessing
 
-4. `export-bank-continuity`
+4. `export-bank-transactions`
+   - extracts evidence-linked transaction rows from bank statement page text
+   - captures transaction date, description, debit/credit amount, running balance when visible, page, evidence ID, and confidence
+   - excludes statement opening/closing balance summary rows from transaction rows
+   - reports documents where transaction rows are not extractable instead of guessing
+
+5. `export-bank-continuity`
    - compares sequential bank statement closing balances to next opening balances
    - groups statements by inferred account key before comparing
    - accepts same-day or next-day period bridges, because different banks label statement boundaries differently
