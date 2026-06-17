@@ -6,8 +6,9 @@
    - registers raw files as source documents
    - classifies document type from filename/type hints
    - extracts text-based PDFs into page-level `EvidenceRef` records
+   - extracts image text with local Tesseract OCR when available
    - records readable markdown conventions as evidence
-   - creates `source_extraction_required` exceptions for images/scanned PDFs without text
+   - creates `source_extraction_required` exceptions for PDFs/images/scans without extractable text
 
 2. `export-document-inventory`
    - groups evidence by source document

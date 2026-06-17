@@ -1676,6 +1676,28 @@ def _extract_pdf_page_quotes(path: Path) -> list[tuple[int, str]]:
         return pages
 
 
+def _extract_image_ocr_quote(path: Path) -> str | None:
+    """Extract text from an image using local Tesseract when available.
+
+    OCR output is treated as evidence with OCR confidence, not as approved
+    accounting treatment. If Tesseract is unavailable or no text is produced,
+    return None so the source remains gated.
+    """
+    try:
+        result = subprocess.run(
+            ["tesseract", str(path), "stdout", "--psm", "6"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    quote = " ".join(result.stdout.split())
+    return quote[:1000] if quote else None
+
+
 def _classify_raw_document(path: Path) -> str:
     name = path.name.lower()
     if path.suffix.lower() == ".md":
@@ -1764,19 +1786,33 @@ def _ingest_raw_inputs_command(args: argparse.Namespace) -> int:
                     )
                 )
         elif path.suffix.lower() in {".png", ".jpg", ".jpeg"}:
-            extraction_required += 1
-            state.exceptions.append(
-                ExceptionItem(
-                    exception_id=f"raw_extraction_required_{idx:03d}",
-                    source="raw_input_intake",
-                    severity=ExceptionSeverity.HIGH,
-                    category="source_extraction_required",
-                    description=f"Raw source document requires extraction before final output: {path.name}",
-                    evidence_refs=[document_id],
-                    recommended_action="Extract page/cell-level source evidence or explicitly mark this document out of scope before release.",
-                    requires_human_approval=True,
+            quote = _extract_image_ocr_quote(path)
+            if quote:
+                state.evidence.append(
+                    EvidenceRef(
+                        evidence_id=f"raw_{idx:03d}_page_001",
+                        source_type=document_type,
+                        file_path=str(path),
+                        page="1",
+                        quote=quote,
+                        document_id=document_id,
+                        confidence="image_ocr",
+                    )
                 )
-            )
+            else:
+                extraction_required += 1
+                state.exceptions.append(
+                    ExceptionItem(
+                        exception_id=f"raw_extraction_required_{idx:03d}",
+                        source="raw_input_intake",
+                        severity=ExceptionSeverity.HIGH,
+                        category="source_extraction_required",
+                        description=f"Raw source document requires extraction before final output: {path.name}",
+                        evidence_refs=[document_id],
+                        recommended_action="Extract page/cell-level source evidence or explicitly mark this document out of scope before release.",
+                        requires_human_approval=True,
+                    )
+                )
     state.documents_ref = str(input_dir)
     _record_state_transition(state, command="ingest-raw-inputs", before_hash=before, summary=f"Registered {len(files)} raw input documents; extraction required for {extraction_required}.")
     save_engagement_state(state_path, state)

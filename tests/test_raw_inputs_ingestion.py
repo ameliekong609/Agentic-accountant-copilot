@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -11,7 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_cli(*args: str):
-    return subprocess.run([sys.executable, "-m", "accountant_copilot.cli", *args], cwd=ROOT, env={"PYTHONPATH": "src"}, text=True, capture_output=True, check=False)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "src"
+    return subprocess.run([sys.executable, "-m", "accountant_copilot.cli", *args], cwd=ROOT, env=env, text=True, capture_output=True, check=False)
 
 
 def write_state(path: Path) -> None:
@@ -84,6 +88,36 @@ def test_ingest_raw_inputs_registers_documents_and_blocks_unextracted_sources(tm
     assert inspected.returncode == 1
     assert payload["final_output_allowed"] is False
     assert payload["blocking_exception_count"] >= 1
+
+
+def test_ingest_raw_inputs_records_image_ocr_evidence_when_available(tmp_path: Path, monkeypatch):
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    image = input_dir / "invoice.png"
+    image.write_bytes(b"not-a-real-image-but-fake-tesseract-ignores-it")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_tesseract = fake_bin / "tesseract"
+    fake_tesseract.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'TAX INVOICE Invoice Number INV-0082 Amount Due AUD 1,100.00'\n"
+    )
+    fake_tesseract.chmod(fake_tesseract.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+    state = tmp_path / "state.json"
+    write_state(state)
+
+    result = run_cli("ingest-raw-inputs", "--state", str(state), "--input-dir", str(input_dir))
+
+    assert result.returncode == 0
+    data = json.loads(state.read_text())
+    assert data["exceptions"] == []
+    evidence = data["evidence"][0]
+    assert evidence["source_type"] == "image_support"
+    assert evidence["page"] == "1"
+    assert evidence["confidence"] == "image_ocr"
+    assert "INV-0082" in evidence["quote"]
+    assert "1,100.00" in evidence["quote"]
 
 
 def test_run_engagement_from_raw_input_dir_exports_review_packet(tmp_path: Path):

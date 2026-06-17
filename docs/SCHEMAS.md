@@ -200,6 +200,6 @@ CSV source intake now validates required `date`, `description`, and `amount` col
 
 ## Raw input intake controls
 
-`ingest-raw-inputs` registers every file under the requested input directory as a `SourceDocument`, classifies common raw source files, records markdown convention text as evidence, extracts text-based PDFs into page-level `EvidenceRef` records, and creates high-severity `source_extraction_required` exceptions for images/scanned PDFs that do not yield text.
+`ingest-raw-inputs` registers every file under the requested input directory as a `SourceDocument`, classifies common raw source files, records markdown convention text as evidence, extracts text-based PDFs into page-level `EvidenceRef` records, extracts image OCR evidence with local Tesseract when available, and creates high-severity `source_extraction_required` exceptions for documents that do not yield extractable text.
 
 `run-engagement --input-dir inputs` calls raw input intake before rendering review outputs. Final output must remain blocked while extraction-required exceptions are open.
