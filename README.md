@@ -370,4 +370,8 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli run-engagement \
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-document-inventory \
   --state outputs/engagement_state.json \
   --output outputs/document_inventory.md
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-statement-facts \
+  --state outputs/engagement_state.json \
+  --output outputs/bank_statement_facts.md
 ```

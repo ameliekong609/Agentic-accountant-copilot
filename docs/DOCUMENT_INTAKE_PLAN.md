@@ -16,6 +16,12 @@
    - applies content tags such as bank, distribution, tax, broker, interest, balance, and fees
    - writes both markdown and JSON inventory outputs
 
+3. `export-bank-statement-facts`
+   - runs only against bank statement evidence
+   - extracts statement period and closing balance from source snippets
+   - links every extracted fact back to its `EvidenceRef`
+   - reports missing period/balance findings instead of guessing
+
 ## Current boundary
 
 This is high-level document/content discovery only. It is not final accounting treatment, reconciliation, journal generation, or financial statement sign-off. The source quote contract still applies: no accounting number should enter later workflows without file/page/row evidence and verifier checks.

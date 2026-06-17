@@ -687,6 +687,151 @@ def _export_document_inventory_command(args: argparse.Namespace) -> int:
     return 0
 
 
+_PERIOD_RE = re.compile(
+    r"Statement Period\s+(?P<start>\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})\s*-\s*(?P<end>\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})",
+    re.IGNORECASE,
+)
+_ALT_PERIOD_RE = re.compile(
+    r"(?P<start>\d{1,2}/\d{1,2}/\d{2,4})\s+STATEMENT OPENING BALANCE.*?(?P<end>\d{1,2}/\d{1,2}/\d{2,4})\s+CLOSING BALANCE",
+    re.IGNORECASE,
+)
+_CLOSING_BALANCE_RE = re.compile(
+    r"Closing Balance\s+(?P<amount>(?:[$€£]\s?)?[+-]?\s?\d[\d,]*(?:\.\d{2})?)\s*(?P<sign>CR|DR)?",
+    re.IGNORECASE,
+)
+_ACCOUNT_NUMBER_RE = re.compile(r"Account Number\s+(?P<account>[^\n]{0,80}?)(?:Statement Period|Closing Balance|Business|$)", re.IGNORECASE)
+
+
+def _extract_bank_fact_from_evidence(document: SourceDocument, evidence: EvidenceRef) -> dict | None:
+    quote = " ".join((evidence.quote or "").split())
+    period_match = _PERIOD_RE.search(quote) or _ALT_PERIOD_RE.search(quote)
+    balance_match = _CLOSING_BALANCE_RE.search(quote)
+    account_match = _ACCOUNT_NUMBER_RE.search(quote)
+    if not period_match or not balance_match:
+        return None
+    account_number_raw = account_match.group("account").strip() if account_match else None
+    fact = {
+        "document_id": document.document_id,
+        "file_path": document.file_path,
+        "page": evidence.page,
+        "evidence_id": evidence.evidence_id,
+        "account_number_raw": account_number_raw or None,
+        "statement_period_start": period_match.group("start"),
+        "statement_period_end": period_match.group("end"),
+        "closing_balance": balance_match.group("amount").replace("$ ", "$").replace("+ ", "").replace("+", "").strip(),
+        "closing_balance_sign": (balance_match.group("sign") or "").upper() or None,
+        "status": "extracted",
+        "snippet": quote[:300],
+    }
+    return fact
+
+
+def _build_bank_statement_facts_payload(state: EngagementState) -> dict:
+    documents = {doc.document_id: doc for doc in state.source_documents if doc.document_type == "bank_statement"}
+    evidence_by_document: dict[str, list[EvidenceRef]] = {doc_id: [] for doc_id in documents}
+    for evidence in state.evidence:
+        if evidence.source_type == "bank_statement" and evidence.document_id in documents:
+            evidence_by_document.setdefault(evidence.document_id, []).append(evidence)
+
+    facts: list[dict] = []
+    findings: list[dict] = []
+    extracted_document_ids: set[str] = set()
+    for document_id, evidence_items in evidence_by_document.items():
+        document = documents[document_id]
+        for evidence in evidence_items:
+            fact = _extract_bank_fact_from_evidence(document, evidence)
+            if fact:
+                facts.append(fact)
+                extracted_document_ids.add(document_id)
+        if evidence_items and document_id not in extracted_document_ids:
+            first = sorted(evidence_items, key=lambda ev: (int(ev.page or 0), ev.evidence_id))[0]
+            findings.append(
+                {
+                    "category": "bank_statement_fact_missing",
+                    "document_id": document.document_id,
+                    "file_path": document.file_path,
+                    "evidence_id": first.evidence_id,
+                    "page": first.page,
+                    "missing_fields": ["statement_period", "closing_balance"],
+                    "recommended_action": "Review source document and improve bank fact parser or mark evidence out of scope.",
+                }
+            )
+        elif not evidence_items:
+            findings.append(
+                {
+                    "category": "bank_statement_evidence_missing",
+                    "document_id": document.document_id,
+                    "file_path": document.file_path,
+                    "evidence_id": None,
+                    "page": None,
+                    "missing_fields": ["page_evidence"],
+                    "recommended_action": "Extract bank statement source evidence before fact extraction.",
+                }
+            )
+    return {
+        "engagement_id": state.engagement_id,
+        "entity_name": state.entity_name,
+        "fact_type": "bank_statement_facts",
+        "facts": facts,
+        "findings": findings,
+        "summary": {
+            "bank_documents": len(documents),
+            "facts_extracted": len(facts),
+            "findings": len(findings),
+        },
+    }
+
+
+def _format_bank_statement_facts(payload: dict) -> str:
+    lines = [f"# Bank Statement Facts — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend(
+        [
+            f"- Bank documents: {summary['bank_documents']}",
+            f"- Facts extracted: {summary['facts_extracted']}",
+            f"- Findings: {summary['findings']}",
+            "",
+        ]
+    )
+    if payload["facts"]:
+        lines.append("## Extracted facts")
+        for fact in payload["facts"]:
+            lines.extend(
+                [
+                    f"- `{fact['evidence_id']}` — `{fact['file_path']}` page {fact['page']}",
+                    f"  - Statement period: {fact['statement_period_start']} to {fact['statement_period_end']}",
+                    f"  - Closing balance: {fact['closing_balance']} {fact['closing_balance_sign'] or ''}".rstrip(),
+                    f"  - Account number/raw: {fact['account_number_raw'] or 'not extracted'}",
+                    f"  - Snippet: {fact['snippet']}",
+                ]
+            )
+        lines.append("")
+    if payload["findings"]:
+        lines.append("## Findings needing review")
+        for finding in payload["findings"]:
+            lines.extend(
+                [
+                    f"- `{finding['evidence_id']}` — `{finding['file_path']}` page {finding['page']}",
+                    f"  - Missing: {', '.join(finding['missing_fields'])}",
+                    f"  - Action: {finding['recommended_action']}",
+                ]
+            )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_bank_statement_facts_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    payload = _build_bank_statement_facts_payload(state)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_bank_statement_facts(payload))
+    json_output = output.with_suffix(".json")
+    json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported bank statement facts → {output}")
+    print(f"Exported bank statement facts JSON → {json_output}")
+    return 0 if not payload["findings"] else 1
+
+
 def _record_evidence_command(args: argparse.Namespace) -> int:
     state_path = Path(args.state)
     state = load_engagement_state(state_path)
@@ -2054,6 +2199,14 @@ def build_parser() -> argparse.ArgumentParser:
     inventory_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     inventory_parser.add_argument("--output", default="outputs/document_inventory.md")
     inventory_parser.set_defaults(func=_export_document_inventory_command)
+
+    bank_facts_parser = subparsers.add_parser(
+        "export-bank-statement-facts",
+        help="Extract bank statement periods and closing balances from page evidence.",
+    )
+    bank_facts_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    bank_facts_parser.add_argument("--output", default="outputs/bank_statement_facts.md")
+    bank_facts_parser.set_defaults(func=_export_bank_statement_facts_command)
 
     evidence_parser = subparsers.add_parser(
         "record-evidence",
