@@ -78,6 +78,31 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-review-template \
   --output outputs/review_decisions_template.json
 ```
 
+Review CoA, adjustments, and export accountant review packet:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli review-coa \
+  --state outputs/engagement_state.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli approve-coa \
+  --state outputs/engagement_state.json \
+  --approved-by "Reviewer Name" \
+  --rationale "CoA presentation and opening balances approved."
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli review-adjustments \
+  --state outputs/engagement_state.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli approve-adjustment \
+  --state outputs/engagement_state.json \
+  --exception-id source_journal_finding_0001 \
+  --approved-by "Reviewer Name" \
+  --rationale "Adjustment ties to support."
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-review-packet \
+  --state outputs/engagement_state.json \
+  --output-dir outputs/review_packet
+```
+
 Exit code policy:
 
 - `0` — final output is allowed by current readiness gate.

@@ -25,6 +25,18 @@ Common optional fields:
 - `decisions`
 - `preferences`
 - `evidence`
+- `coa_review_required`
+- `coa_review_status`
+- `adjustment_review_status`
+- `lifecycle_status`
+
+Lifecycle status values currently used by CLI outputs:
+
+- `intake`
+- `evidence_imported`
+- `exceptions_open`
+- `signed_off`
+- `released`
 
 ## Batch review decisions
 

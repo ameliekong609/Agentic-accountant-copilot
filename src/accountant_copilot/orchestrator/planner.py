@@ -25,10 +25,13 @@ def build_readiness_report(state: EngagementState) -> ReadinessReport:
     """
     blocking = state.blocking_exceptions()
     human_approval = state.unresolved_human_approval_exceptions()
-    allowed = not blocking and not human_approval
+    coa_pending = state.coa_review_required and state.coa_review_status != "approved"
+    allowed = not blocking and not human_approval and not coa_pending
 
     if allowed:
         summary = "Final output allowed: no open critical/high exceptions and all required approvals are recorded."
+    elif coa_pending:
+        summary = "Final output blocked: CoA approval pending."
     else:
         severity_words = sorted({item.severity.value for item in blocking})
         if severity_words:
@@ -43,7 +46,7 @@ def build_readiness_report(state: EngagementState) -> ReadinessReport:
     return ReadinessReport(
         final_output_allowed=allowed,
         blocking_exception_count=len(blocking),
-        human_approval_exception_count=len(human_approval),
+        human_approval_exception_count=len(human_approval) + (1 if coa_pending else 0),
         summary=summary,
     )
 

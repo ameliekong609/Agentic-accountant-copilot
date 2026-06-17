@@ -62,7 +62,7 @@ class ExceptionItem(JsonModelMixin):
 
     @property
     def is_blocking_by_default(self) -> bool:
-        return self.is_open and self.severity in {
+        return (self.is_open or self.status == ExceptionStatus.REJECTED) and self.severity in {
             ExceptionSeverity.CRITICAL,
             ExceptionSeverity.HIGH,
         }

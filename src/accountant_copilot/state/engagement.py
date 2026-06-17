@@ -35,6 +35,10 @@ class EngagementState(JsonModelMixin):
     preferences: list[PreferenceRule] = field(default_factory=list)
     evidence: list[EvidenceRef] = field(default_factory=list)
     agent_tasks: list[dict[str, Any]] = field(default_factory=list)
+    coa_review_required: bool = False
+    coa_review_status: str = "not_required"
+    adjustment_review_status: str = "not_started"
+    lifecycle_status: str = "intake"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EngagementState":
@@ -56,6 +60,10 @@ class EngagementState(JsonModelMixin):
             preferences=[PreferenceRule.from_dict(x) for x in data.get("preferences", [])],
             evidence=[EvidenceRef.from_dict(x) for x in data.get("evidence", [])],
             agent_tasks=list(data.get("agent_tasks", [])),
+            coa_review_required=bool(data.get("coa_review_required", False)),
+            coa_review_status=data.get("coa_review_status", "not_required"),
+            adjustment_review_status=data.get("adjustment_review_status", "not_started"),
+            lifecycle_status=data.get("lifecycle_status", "intake"),
         )
 
     def open_exceptions(self) -> list[ExceptionItem]:

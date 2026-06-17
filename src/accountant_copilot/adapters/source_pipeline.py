@@ -1,16 +1,24 @@
-"""Import exceptions from source pipeline control outputs.
+"""Import exceptions and evidence from source pipeline control outputs.
 
-This adapter is intentionally one-way: it translates deterministic matching and
-journal verifier control signals into the Agentic Accountant Copilot exception
-queue without exposing implementation-version language to users.
+This adapter translates deterministic matching and journal verifier control
+signals into the Agentic Accountant Copilot exception queue and structured
+evidence registry without exposing implementation-version language to users.
 """
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from accountant_copilot.state.evidence import EvidenceRef
 from accountant_copilot.state.exceptions import ExceptionItem, ExceptionSeverity
+
+
+@dataclass
+class SourcePipelineImport:
+    exceptions: list[ExceptionItem]
+    evidence: list[EvidenceRef]
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -34,9 +42,22 @@ def _verifier_severity(check: str) -> ExceptionSeverity:
     return ExceptionSeverity.MEDIUM
 
 
-def _import_unmatched_bank(matching_payload: dict[str, Any]) -> list[ExceptionItem]:
+def _import_unmatched_bank(matching_payload: dict[str, Any]) -> SourcePipelineImport:
     exceptions: list[ExceptionItem] = []
+    evidence: list[EvidenceRef] = []
     for idx, item in enumerate(matching_payload.get("unmatched_bank", []), start=1):
+        evidence_id = f"ev_unmatched_bank_{idx:04d}"
+        evidence.append(
+            EvidenceRef(
+                evidence_id=evidence_id,
+                source_type="bank_statement",
+                file_path=str(item.get("statement_id", "bank_statement")),
+                row=str(item.get("row_index", "")) or None,
+                quote=str(item.get("description", "")) or None,
+                amount=str(item.get("amount", "")) or None,
+                date=str(item.get("date", "")) or None,
+            )
+        )
         classification = item.get("user_classification")
         reason = item.get("classification_reason")
         severity = ExceptionSeverity.MEDIUM if classification else ExceptionSeverity.HIGH
@@ -56,10 +77,7 @@ def _import_unmatched_bank(matching_payload: dict[str, Any]) -> list[ExceptionIt
                 severity=severity,
                 category="unmatched_bank_transaction",
                 description=" — ".join(part for part in description_parts if part),
-                evidence_refs=[
-                    f"matching.unmatched_bank[{idx - 1}]",
-                    f"bank:{item.get('statement_id', '?')}:{item.get('row_index', '?')}",
-                ],
+                evidence_refs=[evidence_id],
                 recommended_action=(
                     "Review the unmatched bank transaction, confirm classification, "
                     "or provide missing supporting evidence before release."
@@ -67,12 +85,24 @@ def _import_unmatched_bank(matching_payload: dict[str, Any]) -> list[ExceptionIt
                 requires_human_approval=True,
             )
         )
-    return exceptions
+    return SourcePipelineImport(exceptions=exceptions, evidence=evidence)
 
 
-def _import_unmatched_events(matching_payload: dict[str, Any]) -> list[ExceptionItem]:
+def _import_unmatched_events(matching_payload: dict[str, Any]) -> SourcePipelineImport:
     exceptions: list[ExceptionItem] = []
+    evidence: list[EvidenceRef] = []
     for idx, item in enumerate(matching_payload.get("unmatched_events", []), start=1):
+        evidence_id = f"ev_unmatched_event_{idx:04d}"
+        evidence.append(
+            EvidenceRef(
+                evidence_id=evidence_id,
+                source_type="supporting_event",
+                file_path=str(item.get("source_file") or item.get("event_id", "supporting_event")),
+                quote=str(item.get("event_type", "")) or None,
+                amount=str(item.get("net_cash_amount", "")) or None,
+                date=str(item.get("date", "")) or None,
+            )
+        )
         classification = item.get("user_classification")
         reason = item.get("classification_reason")
         severity = ExceptionSeverity.MEDIUM if classification else ExceptionSeverity.HIGH
@@ -94,7 +124,7 @@ def _import_unmatched_events(matching_payload: dict[str, Any]) -> list[Exception
                 severity=severity,
                 category="unmatched_event",
                 description=" — ".join(part for part in description_parts if part),
-                evidence_refs=[f"matching.unmatched_events[{idx - 1}]", item.get("event_id", "")],
+                evidence_refs=[evidence_id],
                 recommended_action=(
                     "Review whether this event is an accrual, out-of-period item, "
                     "wrong-entity document, or missing bank movement."
@@ -102,15 +132,25 @@ def _import_unmatched_events(matching_payload: dict[str, Any]) -> list[Exception
                 requires_human_approval=True,
             )
         )
-    return exceptions
+    return SourcePipelineImport(exceptions=exceptions, evidence=evidence)
 
 
-def _import_verifier_findings(journal_payload: dict[str, Any]) -> list[ExceptionItem]:
+def _import_verifier_findings(journal_payload: dict[str, Any]) -> SourcePipelineImport:
     exceptions: list[ExceptionItem] = []
+    evidence: list[EvidenceRef] = []
     for idx, finding in enumerate(journal_payload.get("verifier_findings", []), start=1):
+        evidence_id = f"ev_journal_finding_{idx:04d}"
         check = finding.get("check", "unknown")
         row_name = finding.get("row_name", "unknown row")
         detail = finding.get("detail", "")
+        evidence.append(
+            EvidenceRef(
+                evidence_id=evidence_id,
+                source_type="journal_control",
+                file_path=str(finding.get("file", "journal")),
+                quote=f"{row_name}: {detail}",
+            )
+        )
         exceptions.append(
             ExceptionItem(
                 exception_id=f"source_journal_finding_{idx:04d}",
@@ -118,7 +158,7 @@ def _import_verifier_findings(journal_payload: dict[str, Any]) -> list[Exception
                 severity=_verifier_severity(check),
                 category=f"journal_{check}",
                 description=f"Journal verifier finding [{check}] {row_name}: {detail}",
-                evidence_refs=[finding.get("file", "journal"), f"journal.verifier_findings[{idx - 1}]"],
+                evidence_refs=[evidence_id],
                 recommended_action=(
                     "Resolve this journal/control finding or record an explicit "
                     "accountant-approved accepted-risk decision before final release."
@@ -126,15 +166,24 @@ def _import_verifier_findings(journal_payload: dict[str, Any]) -> list[Exception
                 requires_human_approval=True,
             )
         )
-    return exceptions
+    return SourcePipelineImport(exceptions=exceptions, evidence=evidence)
+
+
+def import_source_pipeline_controls(matching_path: Path, journal_path: Path) -> SourcePipelineImport:
+    """Import source pipeline issues and structured evidence into engagement state."""
+    matching_payload = _load_json(matching_path)
+    journal_payload = _load_json(journal_path)
+    result = SourcePipelineImport(exceptions=[], evidence=[])
+    for partial in (
+        _import_unmatched_bank(matching_payload),
+        _import_unmatched_events(matching_payload),
+        _import_verifier_findings(journal_payload),
+    ):
+        result.exceptions.extend(partial.exceptions)
+        result.evidence.extend(partial.evidence)
+    return result
 
 
 def import_source_pipeline_exceptions(matching_path: Path, journal_path: Path) -> list[ExceptionItem]:
     """Import source pipeline issues into the exception queue."""
-    matching_payload = _load_json(matching_path)
-    journal_payload = _load_json(journal_path)
-    exceptions: list[ExceptionItem] = []
-    exceptions.extend(_import_unmatched_bank(matching_payload))
-    exceptions.extend(_import_unmatched_events(matching_payload))
-    exceptions.extend(_import_verifier_findings(journal_payload))
-    return exceptions
+    return import_source_pipeline_controls(matching_path, journal_path).exceptions
