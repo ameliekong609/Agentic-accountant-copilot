@@ -352,3 +352,18 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-local-ui \
   --review-ui outputs/review.html \
   --output outputs/local_ui/index.html
 ```
+
+Register raw input files and stop at extraction gates:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli ingest-raw-inputs \
+  --state outputs/engagement_state.json \
+  --input-dir inputs
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli run-engagement \
+  --state outputs/engagement_state.json \
+  --input-dir inputs \
+  --statement-package-dir outputs/statement_package \
+  --review-packet-dir outputs/review_packet \
+  --review-ui outputs/review.html
+```

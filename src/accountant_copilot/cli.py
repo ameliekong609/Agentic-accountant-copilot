@@ -1017,6 +1017,85 @@ def _validate_csv_columns(rows: list[dict[str, str]], required: set[str]) -> str
     return None
 
 
+def _classify_raw_document(path: Path) -> str:
+    name = path.name.lower()
+    if path.suffix.lower() == ".md":
+        return "client_conventions"
+    if path.suffix.lower() == ".csv":
+        return "supporting_csv"
+    if path.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+        return "image_support"
+    if "estatement" in name or (path.suffix.lower() == ".pdf" and len(path.stem) == 36 and path.stem.count("-") == 4):
+        return "bank_statement"
+    if "financial statement" in name or "fy24" in name:
+        return "prior_year_financial_statements"
+    if any(token in name for token in ["distribution", "tax statement", "payment_advice", "annual statement"]):
+        return "investment_statement"
+    if "confirmation" in name or "sell" in name:
+        return "broker_confirmation"
+    return "source_document"
+
+
+def _ingest_raw_inputs_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    before = state_hash(state)
+    input_dir = Path(args.input_dir)
+    if not input_dir.exists() or not input_dir.is_dir():
+        print(f"Input directory not found: {input_dir}", file=sys.stderr)
+        return 2
+    files = sorted(path for path in input_dir.iterdir() if path.is_file() and path.name != ".DS_Store")
+    state.source_documents = [doc for doc in state.source_documents if not doc.document_id.startswith("raw_")]
+    state.evidence = [ev for ev in state.evidence if not ev.evidence_id.startswith("raw_")]
+    state.exceptions = [item for item in state.exceptions if item.source != "raw_input_intake"]
+    extraction_required = 0
+    for idx, path in enumerate(files, start=1):
+        document_id = f"raw_{idx:03d}"
+        document_type = _classify_raw_document(path)
+        document = SourceDocument(
+            document_id=document_id,
+            file_path=str(path),
+            document_type=document_type,
+            entity=state.entity_name,
+            period_start=state.fy_start,
+            period_end=state.fy_end,
+            source_hash=_sha256_file(path),
+            status="registered",
+        )
+        state.source_documents.append(document)
+        if path.suffix.lower() == ".md":
+            quote = path.read_text(errors="ignore")[:500]
+            state.evidence.append(
+                EvidenceRef(
+                    evidence_id=f"raw_{idx:03d}_text_001",
+                    source_type=document_type,
+                    file_path=str(path),
+                    quote=quote,
+                    document_id=document_id,
+                    confidence="1.0",
+                )
+            )
+        elif path.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg"}:
+            extraction_required += 1
+            state.exceptions.append(
+                ExceptionItem(
+                    exception_id=f"raw_extraction_required_{idx:03d}",
+                    source="raw_input_intake",
+                    severity=ExceptionSeverity.HIGH,
+                    category="source_extraction_required",
+                    description=f"Raw source document requires extraction before final output: {path.name}",
+                    evidence_refs=[document_id],
+                    recommended_action="Extract page/cell-level source evidence or explicitly mark this document out of scope before release.",
+                    requires_human_approval=True,
+                )
+            )
+    state.documents_ref = str(input_dir)
+    _record_state_transition(state, command="ingest-raw-inputs", before_hash=before, summary=f"Registered {len(files)} raw input documents; extraction required for {extraction_required}.")
+    save_engagement_state(state_path, state)
+    print(f"Registered {len(files)} raw input documents; extraction-required: {extraction_required}")
+    return 0 if extraction_required == 0 else 1
+
+
 def _ingest_source_document_command(args: argparse.Namespace) -> int:
     state_path = Path(args.state)
     state = load_engagement_state(state_path)
@@ -1577,6 +1656,8 @@ def _run_engagement_command(args: argparse.Namespace) -> int:
     state = load_engagement_state(state_path)
     before = state_hash(state)
 
+    if getattr(args, "input_dir", None):
+        _ingest_raw_inputs_command(argparse.Namespace(state=str(state_path), input_dir=args.input_dir))
     if getattr(args, "bank_csv", None):
         _ingest_source_document_command(argparse.Namespace(state=str(state_path), document_id="doc_bank", file_path=args.bank_csv, document_type="bank_statement", entity=state.entity_name, period_start=state.fy_start, period_end=state.fy_end, notes="Internal run source intake."))
     if getattr(args, "events_csv", None):
@@ -1669,6 +1750,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--review-packet-dir", default="outputs/review_packet")
     run_parser.add_argument("--release-manifest", default="outputs/release_manifest.json")
     run_parser.add_argument("--bank-csv", default=None)
+    run_parser.add_argument("--input-dir", default=None)
     run_parser.add_argument("--events-csv", default=None)
     run_parser.add_argument("--trial-balance-csv", default=None)
     run_parser.add_argument("--matches-output", default=None)
@@ -1685,6 +1767,14 @@ def build_parser() -> argparse.ArgumentParser:
     apply_review_ui_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     apply_review_ui_parser.add_argument("--decisions", required=True)
     apply_review_ui_parser.set_defaults(func=_apply_review_ui_decisions_command)
+
+    ingest_parser = subparsers.add_parser(
+        "ingest-raw-inputs",
+        help="Register raw input files and create extraction-required review exceptions.",
+    )
+    ingest_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    ingest_parser.add_argument("--input-dir", default="inputs")
+    ingest_parser.set_defaults(func=_ingest_raw_inputs_command)
 
     ingest_parser = subparsers.add_parser(
         "ingest-source-document",

@@ -197,3 +197,9 @@ CSV source intake now validates required `date`, `description`, and `amount` col
 `render-xlsx-statements` writes a dependency-free XLSX financial statement workbook and verifier result, registering an `xlsx_financial_statements` output artifact.
 
 `export-local-ui` writes a lightweight internal HTML wrapper linking local review artifacts. It is for internal workflow convenience and does not replace review controls.
+
+## Raw input intake controls
+
+`ingest-raw-inputs` registers every file under the requested input directory as a `SourceDocument`, classifies common raw source files, records markdown convention text as evidence, and creates high-severity `source_extraction_required` exceptions for PDF/image files until page-level extraction exists.
+
+`run-engagement --input-dir inputs` calls raw input intake before rendering review outputs. Final output must remain blocked while extraction-required exceptions are open.
