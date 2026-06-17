@@ -5,6 +5,7 @@ import argparse
 import csv
 import hashlib
 import json
+import subprocess
 import sys
 import zipfile
 from datetime import datetime, timezone
@@ -1017,6 +1018,43 @@ def _validate_csv_columns(rows: list[dict[str, str]], required: set[str]) -> str
     return None
 
 
+def _extract_pdf_page_quotes(path: Path) -> list[tuple[int, str]]:
+    """Extract text quotes from a text-based PDF, one quote per page.
+
+    PyMuPDF is preferred when installed. A `pdftotext` fallback keeps local
+    development usable without making scanned/OCR documents appear verified.
+    Empty pages intentionally return no evidence so the document remains gated.
+    """
+    try:
+        import fitz  # type: ignore[import-not-found]
+
+        pages: list[tuple[int, str]] = []
+        with fitz.open(path) as doc:
+            for index, page in enumerate(doc, start=1):
+                text = " ".join(page.get_text("text").split())
+                if text:
+                    pages.append((index, text[:1000]))
+        return pages
+    except Exception:
+        try:
+            result = subprocess.run(
+                ["pdftotext", "-layout", str(path), "-"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            return []
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        pages = []
+        for index, text in enumerate(result.stdout.split("\f"), start=1):
+            quote = " ".join(text.split())
+            if quote:
+                pages.append((index, quote[:1000]))
+        return pages
+
+
 def _classify_raw_document(path: Path) -> str:
     name = path.name.lower()
     if path.suffix.lower() == ".md":
@@ -1075,7 +1113,36 @@ def _ingest_raw_inputs_command(args: argparse.Namespace) -> int:
                     confidence="1.0",
                 )
             )
-        elif path.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg"}:
+        elif path.suffix.lower() == ".pdf":
+            page_quotes = _extract_pdf_page_quotes(path)
+            if page_quotes:
+                for page_number, quote in page_quotes:
+                    state.evidence.append(
+                        EvidenceRef(
+                            evidence_id=f"raw_{idx:03d}_page_{page_number:03d}",
+                            source_type=document_type,
+                            file_path=str(path),
+                            page=str(page_number),
+                            quote=quote,
+                            document_id=document_id,
+                            confidence="text_pdf",
+                        )
+                    )
+            else:
+                extraction_required += 1
+                state.exceptions.append(
+                    ExceptionItem(
+                        exception_id=f"raw_extraction_required_{idx:03d}",
+                        source="raw_input_intake",
+                        severity=ExceptionSeverity.HIGH,
+                        category="source_extraction_required",
+                        description=f"Raw source document requires extraction before final output: {path.name}",
+                        evidence_refs=[document_id],
+                        recommended_action="Extract page/cell-level source evidence or explicitly mark this document out of scope before release.",
+                        requires_human_approval=True,
+                    )
+                )
+        elif path.suffix.lower() in {".png", ".jpg", ".jpeg"}:
             extraction_required += 1
             state.exceptions.append(
                 ExceptionItem(

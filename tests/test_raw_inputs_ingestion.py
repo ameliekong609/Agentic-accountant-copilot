@@ -18,6 +18,47 @@ def write_state(path: Path) -> None:
     path.write_text(EngagementState(engagement_id="raw_test", entity_name="Raw Trust", entity_type="discretionary_trust", fy_start="2024-07-01", fy_end="2025-06-30", documents_ref="inputs", coa_ref="inputs/prior.pdf").model_dump_json())
 
 
+def write_text_pdf(path: Path, text: str) -> None:
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
+    objects = [
+        b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+        b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n",
+        b"4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+        b"5 0 obj << /Length " + str(len(stream)).encode() + b" >> stream\n" + stream + b"\nendstream endobj\n",
+    ]
+    content = b"%PDF-1.4\n"
+    offsets = []
+    for obj in objects:
+        offsets.append(len(content))
+        content += obj
+    xref_at = len(content)
+    content += f"xref\n0 {len(objects)+1}\n0000000000 65535 f \n".encode()
+    for offset in offsets:
+        content += f"{offset:010d} 00000 n \n".encode()
+    content += f"trailer << /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n".encode()
+    path.write_bytes(content)
+
+
+def test_ingest_raw_inputs_extracts_text_pdf_as_page_evidence(tmp_path: Path):
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    write_text_pdf(input_dir / "bank.pdf", "Bank closing balance 123.45")
+    state = tmp_path / "state.json"
+    write_state(state)
+
+    result = run_cli("ingest-raw-inputs", "--state", str(state), "--input-dir", str(input_dir))
+
+    assert result.returncode == 0
+    data = json.loads(state.read_text())
+    assert len(data["source_documents"]) == 1
+    assert data["exceptions"] == []
+    evidence = data["evidence"][0]
+    assert evidence["page"] == "1"
+    assert evidence["document_id"] == "raw_001"
+    assert "Bank closing balance 123.45" in evidence["quote"]
+
+
 def test_ingest_raw_inputs_registers_documents_and_blocks_unextracted_sources(tmp_path: Path):
     input_dir = tmp_path / "inputs"
     input_dir.mkdir()

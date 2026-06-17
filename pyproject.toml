@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "Agentic accountant copilot for source-traceable financial statement preparation."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "pymupdf>=1.24",
+]
 
 [project.optional-dependencies]
 dev = [

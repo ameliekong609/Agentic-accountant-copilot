@@ -353,7 +353,7 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-local-ui \
   --output outputs/local_ui/index.html
 ```
 
-Register raw input files and stop at extraction gates:
+Register raw input files, extract text-based PDF pages as evidence, and stop at remaining extraction gates:
 
 ```bash
 PYTHONPATH=src python3.11 -m accountant_copilot.cli ingest-raw-inputs \
