@@ -47,6 +47,14 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli inspect-engagement \
   --json
 ```
 
+Export a markdown audit trail of readiness, exceptions, evidence, and accountant decisions:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-audit-trail \
+  --state outputs/engagement_state.json \
+  --output outputs/audit_trail.md
+```
+
 Exit code policy:
 
 - `0` — final output is allowed by current readiness gate.

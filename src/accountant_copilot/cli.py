@@ -141,6 +141,110 @@ def _inspect_engagement_command(args: argparse.Namespace) -> int:
     return 0 if payload["final_output_allowed"] else 1
 
 
+def _yes_no(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+def _refs_text(refs: list[str]) -> str:
+    return "; ".join(ref for ref in refs if ref) or "none recorded"
+
+
+def _decision_by_id(state: EngagementState) -> dict[str, AccountantDecision]:
+    return {decision.decision_id: decision for decision in state.decisions}
+
+
+def format_audit_trail(state: EngagementState) -> str:
+    """Render a markdown audit trail for an engagement."""
+    payload = inspect_engagement(state)
+    allowed = "YES" if payload["final_output_allowed"] else "NO"
+    decisions = _decision_by_id(state)
+    lines = [
+        f"# Audit Trail — {state.entity_name}",
+        "",
+        "## Engagement",
+        f"- Engagement ID: {state.engagement_id}",
+        f"- Entity type: {state.entity_type or 'unknown'}",
+        f"- FY: {state.fy_start} to {state.fy_end}",
+        f"- Documents ref: {state.documents_ref or 'none recorded'}",
+        f"- CoA ref: {state.coa_ref or 'none recorded'}",
+        "",
+        "## Release readiness",
+        f"- Open exceptions: {payload['open_exception_count']}",
+        f"- Blocking exceptions: {payload['blocking_exception_count']}",
+        f"- Human approvals needed: {payload['human_approval_exception_count']}",
+        f"- Final output allowed: {allowed}",
+        f"- Readiness: {payload['readiness_summary']}",
+        "",
+        "## Exceptions",
+    ]
+
+    if not state.exceptions:
+        lines.append("No exceptions recorded.")
+    else:
+        sorted_exceptions = sorted(
+            state.exceptions,
+            key=lambda item: (item.severity.value, item.status.value, item.category, item.exception_id),
+        )
+        for item in sorted_exceptions:
+            decision = decisions.get(item.decision_id or "")
+            lines.extend(
+                [
+                    "",
+                    f"### {item.exception_id} — {item.severity.value} / {item.status.value}",
+                    f"- Category: {item.category}",
+                    f"- Source: {item.source}",
+                    f"- Blocking: {_yes_no(item.is_blocking_by_default)}",
+                    f"- Requires human approval: {_yes_no(item.requires_human_approval)}",
+                    f"- Evidence: {_refs_text(item.evidence_refs)}",
+                    f"- Description: {item.description}",
+                    f"- Recommended action: {item.recommended_action}",
+                    f"- Decision: {item.decision_id or 'none recorded'}",
+                ]
+            )
+            if decision:
+                lines.extend(
+                    [
+                        f"- Decision status: {decision.status.value}",
+                        f"- Selected option: {decision.selected_option}",
+                        f"- Approved by: {decision.approved_by or 'none recorded'}",
+                        f"- Rationale: {decision.rationale}",
+                    ]
+                )
+
+    lines.extend(["", "## Accountant decisions"])
+    if not state.decisions:
+        lines.append("No accountant decisions recorded.")
+    else:
+        for decision in sorted(state.decisions, key=lambda item: item.decision_id):
+            lines.extend(
+                [
+                    "",
+                    f"### {decision.decision_id}",
+                    f"- Status: {decision.status.value}",
+                    f"- Question: {decision.question}",
+                    f"- Selected option: {decision.selected_option}",
+                    f"- Approved by: {decision.approved_by or 'none recorded'}",
+                    f"- Evidence: {_refs_text(decision.evidence_refs)}",
+                    f"- Rationale: {decision.rationale}",
+                ]
+            )
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_audit_trail_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    markdown = format_audit_trail(state)
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(markdown)
+        print(f"Exported audit trail → {output_path}")
+    else:
+        print(markdown, end="")
+    return 0 if inspect_engagement(state)["final_output_allowed"] else 1
+
+
 def _format_exception_item(item: ExceptionItem) -> list[str]:
     evidence = "; ".join(ref for ref in item.evidence_refs if ref) or "none recorded"
     return [
@@ -296,6 +400,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON instead of text.",
     )
     inspect_parser.set_defaults(func=_inspect_engagement_command)
+
+    audit_parser = subparsers.add_parser(
+        "export-audit-trail",
+        help="Export engagement readiness, exceptions, evidence, and accountant decisions as markdown.",
+    )
+    audit_parser.add_argument(
+        "--state",
+        default=str(DEFAULT_STATE_PATH),
+        help=f"Path to engagement_state.json (default: {DEFAULT_STATE_PATH})",
+    )
+    audit_parser.add_argument(
+        "--output",
+        default=None,
+        help="Where to write audit_trail.md. If omitted, markdown is printed to stdout.",
+    )
+    audit_parser.set_defaults(func=_export_audit_trail_command)
 
     review_parser = subparsers.add_parser(
         "review-exceptions",
