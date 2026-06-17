@@ -366,4 +366,8 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli run-engagement \
   --statement-package-dir outputs/statement_package \
   --review-packet-dir outputs/review_packet \
   --review-ui outputs/review.html
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-document-inventory \
+  --state outputs/engagement_state.json \
+  --output outputs/document_inventory.md
 ```

@@ -5,6 +5,7 @@ import argparse
 import csv
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import zipfile
@@ -563,6 +564,126 @@ def _validate_state_command(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     print("Engagement state is valid")
+    return 0
+
+
+_AMOUNT_RE = re.compile(r"(?:[$€£]\s?-?\d[\d,]*(?:\.\d{2})?|-?\d{1,3}(?:,\d{3})+(?:\.\d{2})?)")
+_DATE_RE = re.compile(r"\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})\b")
+_CONTENT_KEYWORDS = {
+    "bank": ["bank", "statement", "account", "closing balance", "opening balance"],
+    "distribution": ["distribution", "dividend", "payment advice"],
+    "tax": ["tax", "franking", "withholding", "capital gain"],
+    "broker": ["confirmation", "sell", "buy", "settlement", "trade"],
+    "interest": ["interest"],
+    "balance": ["balance", "market value", "net asset"],
+    "fees": ["fee", "management fee", "expense"],
+}
+
+
+def _unique_matches(pattern: re.Pattern[str], text: str, limit: int = 8) -> list[str]:
+    seen: list[str] = []
+    for match in pattern.findall(text):
+        value = match.strip()
+        if value and value not in seen:
+            seen.append(value)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
+def _content_tags(text: str, document_type: str) -> list[str]:
+    haystack = text.lower()
+    tags = [document_type]
+    for tag, needles in _CONTENT_KEYWORDS.items():
+        if any(needle in haystack for needle in needles):
+            tags.append(tag)
+    return sorted(dict.fromkeys(tags))
+
+
+def _build_document_inventory_payload(state: EngagementState) -> dict:
+    evidence_by_document: dict[str, list[EvidenceRef]] = {}
+    for evidence in state.evidence:
+        key = evidence.document_id or evidence.file_path
+        evidence_by_document.setdefault(key, []).append(evidence)
+
+    documents = []
+    for document in state.source_documents:
+        evidence_items = evidence_by_document.get(document.document_id, [])
+        combined = " ".join(item.quote or "" for item in evidence_items)
+        pages = []
+        for item in sorted(evidence_items, key=lambda ev: (int(ev.page or 0), ev.evidence_id)):
+            quote = " ".join((item.quote or "").split())
+            pages.append(
+                {
+                    "page": item.page,
+                    "evidence_id": item.evidence_id,
+                    "snippet": quote[:300],
+                    "dates": _unique_matches(_DATE_RE, quote),
+                    "amounts": _unique_matches(_AMOUNT_RE, quote),
+                    "tags": _content_tags(quote, document.document_type),
+                }
+            )
+        documents.append(
+            {
+                "document_id": document.document_id,
+                "file_path": document.file_path,
+                "document_type": document.document_type,
+                "status": document.status,
+                "evidence_count": len(evidence_items),
+                "tags": _content_tags(combined, document.document_type),
+                "dates": _unique_matches(_DATE_RE, combined, limit=12),
+                "amounts": _unique_matches(_AMOUNT_RE, combined, limit=12),
+                "pages": pages,
+            }
+        )
+    return {"engagement_id": state.engagement_id, "entity_name": state.entity_name, "documents": documents}
+
+
+def _format_document_inventory(payload: dict) -> str:
+    lines = [f"# Document Inventory — {payload['entity_name']}", ""]
+    lines.append(f"Documents: {len(payload['documents'])}")
+    lines.append("")
+    for document in payload["documents"]:
+        lines.extend(
+            [
+                f"## {document['document_id']} — {Path(document['file_path']).name}",
+                f"- Path: `{document['file_path']}`",
+                f"- Type: {document['document_type']}",
+                f"- Evidence refs: {document['evidence_count']}",
+                f"- Tags: {', '.join(document['tags']) if document['tags'] else 'none'}",
+                f"- Dates found: {', '.join(document['dates']) if document['dates'] else 'none'}",
+                f"- Amounts found: {', '.join(document['amounts']) if document['amounts'] else 'none'}",
+                "",
+            ]
+        )
+        if document["pages"]:
+            lines.append("### Page evidence")
+            for page in document["pages"]:
+                lines.extend(
+                    [
+                        f"- Page {page['page'] or 'n/a'} — {page['evidence_id']}",
+                        f"  - Tags: {', '.join(page['tags']) if page['tags'] else 'none'}",
+                        f"  - Dates: {', '.join(page['dates']) if page['dates'] else 'none'}",
+                        f"  - Amounts: {', '.join(page['amounts']) if page['amounts'] else 'none'}",
+                        f"  - Snippet: {page['snippet']}",
+                    ]
+                )
+            lines.append("")
+        else:
+            lines.extend(["No extracted page evidence yet.", ""])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_document_inventory_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    payload = _build_document_inventory_payload(state)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_document_inventory(payload))
+    json_output = output.with_suffix(".json")
+    json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported document inventory → {output}")
+    print(f"Exported document inventory JSON → {json_output}")
     return 0
 
 
@@ -1925,6 +2046,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     validate_parser.set_defaults(func=_validate_state_command)
+
+    inventory_parser = subparsers.add_parser(
+        "export-document-inventory",
+        help="Export high-level source document and page evidence inventory.",
+    )
+    inventory_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    inventory_parser.add_argument("--output", default="outputs/document_inventory.md")
+    inventory_parser.set_defaults(func=_export_document_inventory_command)
 
     evidence_parser = subparsers.add_parser(
         "record-evidence",
