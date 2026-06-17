@@ -413,6 +413,13 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-broker-trade-review \
   --facts outputs/broker_trade_facts.json \
   --output outputs/broker_trade_review.md
 
+PYTHONPATH=src python3.11 -m accountant_copilot.cli match-source-facts \
+  --bank-transactions outputs/bank_transactions.json \
+  --invoice-facts outputs/invoice_facts.json \
+  --distribution-tax-facts outputs/distribution_tax_facts.json \
+  --broker-trade-facts outputs/broker_trade_facts.json \
+  --output outputs/source_fact_matches.md
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \
   --facts outputs/bank_statement_facts.json \
   --output outputs/bank_continuity.md

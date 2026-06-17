@@ -211,3 +211,5 @@ CSV source intake now validates required `date`, `description`, and `amount` col
 `export-broker-trade-facts` extracts evidence-linked broker confirmation facts when labels are parseable and writes incomplete-extraction findings instead of guessing.
 
 `export-broker-trade-review` creates unapproved accountant review findings for broker disposal/acquisition classification, gain/loss treatment, and bank settlement matching.
+
+`match-source-facts` matches extracted invoice, distribution/tax, and broker source facts to bank transaction evidence by exact amount/date. Proposed matches remain `approved=false`; ambiguous or missing matches become findings rather than forced links.

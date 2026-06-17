@@ -1698,6 +1698,155 @@ def _export_broker_trade_review_command(args: argparse.Namespace) -> int:
     return 0 if not payload["review_findings"] else 1
 
 
+def _money_value(value: str | None) -> float | None:
+    if value is None:
+        return None
+    cleaned = re.sub(r"[^0-9.-]", "", str(value))
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _date_value(value: str | None) -> str | None:
+    parsed = _parse_bank_statement_date(value)
+    return parsed.strftime("%Y-%m-%d") if parsed else None
+
+
+def _bank_transaction_amount(transaction: dict) -> float | None:
+    return _money_value(transaction.get("debit") or transaction.get("credit"))
+
+
+def _source_fact_match_candidates(invoice_payload: dict | None, distribution_payload: dict | None, broker_payload: dict | None) -> list[dict]:
+    candidates: list[dict] = []
+    for fact in (invoice_payload or {}).get("facts", []):
+        candidates.append({
+            "source_fact_type": "invoice",
+            "amount": _money_value(fact.get("amount_due")),
+            "date": _date_value(fact.get("due_date") or fact.get("invoice_date")),
+            "evidence_id": fact.get("evidence_id"),
+            "file_path": fact.get("file_path"),
+            "page": fact.get("page"),
+            "label": fact.get("invoice_number") or "invoice",
+        })
+    for fact in (distribution_payload or {}).get("facts", []):
+        components = fact.get("components", {}) or {}
+        amount = components.get("net_cash_distribution") or components.get("cash_distribution")
+        candidates.append({
+            "source_fact_type": "distribution_tax",
+            "amount": _money_value(amount),
+            "date": _date_value(fact.get("payment_date") or fact.get("record_date")),
+            "evidence_id": fact.get("evidence_id"),
+            "file_path": fact.get("file_path"),
+            "page": fact.get("page"),
+            "label": "distribution_tax",
+        })
+    for fact in (broker_payload or {}).get("facts", []):
+        fields = fact.get("fields", {}) or {}
+        candidates.append({
+            "source_fact_type": "broker_trade",
+            "amount": _money_value(fields.get("settlement_amount") or fields.get("consideration")),
+            "date": _date_value(fields.get("settlement_date") or fields.get("transaction_date")),
+            "evidence_id": fact.get("evidence_id"),
+            "file_path": fact.get("file_path"),
+            "page": fact.get("page"),
+            "label": fact.get("side") or "broker_trade",
+        })
+    return [candidate for candidate in candidates if candidate.get("amount") is not None]
+
+
+def _build_source_fact_matches_payload(bank_payload: dict, invoice_payload: dict | None, distribution_payload: dict | None, broker_payload: dict | None) -> dict:
+    transactions = bank_payload.get("transactions", [])
+    source_facts = _source_fact_match_candidates(invoice_payload, distribution_payload, broker_payload)
+    matches: list[dict] = []
+    findings: list[dict] = []
+    for fact in source_facts:
+        candidates = []
+        for transaction in transactions:
+            amount = _bank_transaction_amount(transaction)
+            if amount is None or abs(amount - fact["amount"]) > 0.005:
+                continue
+            if fact.get("date") and _date_value(transaction.get("transaction_date")) != fact["date"]:
+                continue
+            candidates.append(transaction)
+        if len(candidates) == 1:
+            transaction = candidates[0]
+            matches.append({
+                "source_fact_type": fact["source_fact_type"],
+                "source_evidence_id": fact.get("evidence_id"),
+                "bank_evidence_id": transaction.get("evidence_id"),
+                "amount": f"{fact['amount']:.2f}",
+                "date": fact.get("date"),
+                "match_type": "exact_amount_date",
+                "approved": False,
+                "evidence_refs": [ref for ref in [fact.get("evidence_id"), transaction.get("evidence_id")] if ref],
+            })
+        elif len(candidates) > 1:
+            findings.append({
+                "category": "ambiguous_source_fact_bank_match",
+                "source_fact_type": fact["source_fact_type"],
+                "source_evidence_id": fact.get("evidence_id"),
+                "candidate_bank_evidence_ids": [item.get("evidence_id") for item in candidates],
+                "recommended_action": "Accountant to choose the correct bank transaction or mark the source fact unmatched.",
+            })
+        else:
+            findings.append({
+                "category": "source_fact_bank_match_missing",
+                "source_fact_type": fact["source_fact_type"],
+                "source_evidence_id": fact.get("evidence_id"),
+                "amount": f"{fact['amount']:.2f}",
+                "date": fact.get("date"),
+                "recommended_action": "Accountant to locate bank evidence, adjust matching tolerance, or record why no bank match is expected.",
+            })
+    return {
+        "engagement_id": bank_payload.get("engagement_id"),
+        "entity_name": bank_payload.get("entity_name"),
+        "match_type": "source_fact_to_bank_transaction",
+        "matches": matches,
+        "findings": findings,
+        "summary": {"bank_transactions": len(transactions), "source_facts": len(source_facts), "matches": len(matches), "findings": len(findings)},
+    }
+
+
+def _format_source_fact_matches(payload: dict) -> str:
+    lines = [f"# Source Fact Bank Matches — {payload.get('entity_name') or 'engagement'}", ""]
+    summary = payload["summary"]
+    lines.extend([f"- Bank transactions: {summary['bank_transactions']}", f"- Source facts: {summary['source_facts']}", f"- Matches: {summary['matches']}", f"- Findings: {summary['findings']}", ""])
+    if payload["matches"]:
+        lines.append("## Proposed matches")
+        for match in payload["matches"]:
+            lines.extend([f"- {match['source_fact_type']}: {match['amount']} on {match.get('date') or 'unknown date'}", f"  - Approved: {match['approved']}", f"  - Evidence: {', '.join(match.get('evidence_refs', []))}"])
+    if payload["findings"]:
+        lines.extend(["", "## Findings needing review"])
+        for finding in payload["findings"]:
+            lines.extend([f"- {finding['category']}: {finding.get('source_fact_type')}", f"  - Evidence: {finding.get('source_evidence_id')}", f"  - Action: {finding['recommended_action']}"])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _load_optional_json(path: str | None) -> dict | None:
+    return json.loads(Path(path).read_text()) if path else None
+
+
+def _match_source_facts_command(args: argparse.Namespace) -> int:
+    bank_payload = json.loads(Path(args.bank_transactions).read_text())
+    payload = _build_source_fact_matches_payload(
+        bank_payload,
+        _load_optional_json(getattr(args, "invoice_facts", None)),
+        _load_optional_json(getattr(args, "distribution_tax_facts", None)),
+        _load_optional_json(getattr(args, "broker_trade_facts", None)),
+    )
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_source_fact_matches(payload))
+    json_output = output.with_suffix(".json")
+    json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported source fact matches → {output}")
+    print(f"Exported source fact matches JSON → {json_output}")
+    return 0 if not payload["findings"] else 1
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -3478,6 +3627,17 @@ def build_parser() -> argparse.ArgumentParser:
     broker_trade_review_parser.add_argument("--facts", default="outputs/broker_trade_facts.json")
     broker_trade_review_parser.add_argument("--output", default="outputs/broker_trade_review.md")
     broker_trade_review_parser.set_defaults(func=_export_broker_trade_review_command)
+
+    source_fact_match_parser = subparsers.add_parser(
+        "match-source-facts",
+        help="Match extracted invoice, distribution/tax, and broker source facts to bank transaction evidence.",
+    )
+    source_fact_match_parser.add_argument("--bank-transactions", required=True)
+    source_fact_match_parser.add_argument("--invoice-facts", default=None)
+    source_fact_match_parser.add_argument("--distribution-tax-facts", default=None)
+    source_fact_match_parser.add_argument("--broker-trade-facts", default=None)
+    source_fact_match_parser.add_argument("--output", default="outputs/source_fact_matches.md")
+    source_fact_match_parser.set_defaults(func=_match_source_facts_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",

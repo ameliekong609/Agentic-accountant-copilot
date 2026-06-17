@@ -59,7 +59,12 @@
    - asks for disposal/acquisition classification, gain/loss treatment, and bank settlement matching review
    - explicitly sets `approved=false`; no realised gain/loss or investment treatment is auto-approved
 
-11. `export-bank-continuity`
+11. `match-source-facts`
+   - matches extracted invoice, distribution/tax, and broker facts to bank transaction evidence by exact amount/date
+   - leaves proposed matches unapproved for accountant review
+   - reports ambiguous or missing bank matches as findings instead of forcing a link
+
+12. `export-bank-continuity`
    - compares sequential bank statement closing balances to next opening balances
    - groups statements by inferred account key before comparing
    - accepts same-day or next-day period bridges, because different banks label statement boundaries differently
