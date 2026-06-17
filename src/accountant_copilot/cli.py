@@ -703,6 +703,14 @@ _CLOSING_BALANCE_RE = re.compile(
     r"Closing Balance\s+(?P<amount>(?:[$€£]\s?)?[+-]?\s?\d[\d,]*(?:\.\d{2})?)\s*(?P<sign>CR|DR)?",
     re.IGNORECASE,
 )
+_TOTAL_CREDITS_RE = re.compile(
+    r"Total\s+(?:Credits|Deposits)\s*(?P<sign>[+-])?\s*(?P<amount>(?:[$€£]\s?)?\d[\d,]*(?:\.\d{2})?)",
+    re.IGNORECASE,
+)
+_TOTAL_DEBITS_RE = re.compile(
+    r"Total\s+(?:Debits|Withdrawals)\s*(?P<sign>[+-])?\s*(?P<amount>(?:[$€£]\s?)?\d[\d,]*(?:\.\d{2})?)",
+    re.IGNORECASE,
+)
 _ACCOUNT_NUMBER_RE = re.compile(r"Account Number\s+(?P<account>[^\n]{0,80}?)(?:Statement Period|Opening Balance|Closing Balance|Business|$)", re.IGNORECASE)
 
 
@@ -728,6 +736,8 @@ def _extract_bank_fact_from_evidence(document: SourceDocument, evidence: Evidenc
     period_match = _PERIOD_RE.search(quote) or _ALT_PERIOD_RE.search(quote)
     opening_match = _OPENING_BALANCE_RE.search(quote)
     closing_match = _CLOSING_BALANCE_RE.search(quote)
+    total_credits_match = _TOTAL_CREDITS_RE.search(quote)
+    total_debits_match = _TOTAL_DEBITS_RE.search(quote)
     account_match = _ACCOUNT_NUMBER_RE.search(quote)
     if not period_match or not closing_match:
         return None
@@ -746,6 +756,10 @@ def _extract_bank_fact_from_evidence(document: SourceDocument, evidence: Evidenc
         "opening_balance_sign": (opening_match.group("sign") or "").upper() or None if opening_match else None,
         "closing_balance": _clean_money_amount(closing_match.group("amount")),
         "closing_balance_sign": (closing_match.group("sign") or "").upper() or None,
+        "total_credits": _clean_money_amount(total_credits_match.group("amount")) if total_credits_match else None,
+        "total_credits_sign": total_credits_match.group("sign") if total_credits_match else None,
+        "total_debits": _clean_money_amount(total_debits_match.group("amount")) if total_debits_match else None,
+        "total_debits_sign": total_debits_match.group("sign") if total_debits_match else None,
         "status": "extracted",
         "snippet": quote[:300],
     }
@@ -841,6 +855,8 @@ def _format_bank_statement_facts(payload: dict) -> str:
                     f"  - Statement period: {fact['statement_period_start']} to {fact['statement_period_end']}",
                     f"  - Opening balance: {fact['opening_balance'] or 'not extracted'} {fact['opening_balance_sign'] or ''}".rstrip(),
                     f"  - Closing balance: {fact['closing_balance']} {fact['closing_balance_sign'] or ''}".rstrip(),
+                    f"  - Total credits/deposits: {fact.get('total_credits') or 'not extracted'} {fact.get('total_credits_sign') or ''}".rstrip(),
+                    f"  - Total debits/withdrawals: {fact.get('total_debits') or 'not extracted'} {fact.get('total_debits_sign') or ''}".rstrip(),
                     f"  - Account number/raw: {fact['account_number_raw'] or 'not extracted'}",
                     f"  - Account key/raw: {fact.get('account_key_raw') or 'unknown_bank_account'}",
                     f"  - Snippet: {fact['snippet']}",

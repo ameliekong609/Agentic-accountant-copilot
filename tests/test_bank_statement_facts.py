@@ -51,7 +51,7 @@ def test_export_bank_statement_facts_extracts_period_closing_balance_and_evidenc
             file_path="inputs/eStatement.pdf",
             document_id="doc_bank",
             page="1",
-            quote="Statement Period 1 Jan 2025 - 31 Jan 2025 Opening Balance $30,211.09 CR Closing Balance $30,325.01 CR Business Transaction Account",
+            quote="Statement Period 1 Jan 2025 - 31 Jan 2025 Opening Balance $30,211.09 CR Total Credits + $10,080.31 Total Debits - $9,966.39 Closing Balance $30,325.01 CR Business Transaction Account",
             confidence="text_pdf",
         )
     )
@@ -77,6 +77,10 @@ def test_export_bank_statement_facts_extracts_period_closing_balance_and_evidenc
     assert fact["opening_balance_sign"] == "CR"
     assert fact["closing_balance"] == "$30,325.01"
     assert fact["closing_balance_sign"] == "CR"
+    assert fact["total_credits"] == "$10,080.31"
+    assert fact["total_credits_sign"] == "+"
+    assert fact["total_debits"] == "$9,966.39"
+    assert fact["total_debits_sign"] == "-"
     assert fact["status"] == "extracted"
     assert fact["evidence_id"] == "raw_001_page_001"
 

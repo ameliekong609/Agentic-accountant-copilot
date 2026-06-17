@@ -18,7 +18,7 @@
 
 3. `export-bank-statement-facts`
    - runs only against bank statement evidence
-   - extracts statement period, opening balance, and closing balance from source snippets
+   - extracts statement period, opening balance, closing balance, and statement-level total credits/debits from source snippets
    - links every extracted fact back to its `EvidenceRef`
    - reports missing period/opening/closing balance findings instead of guessing
 
