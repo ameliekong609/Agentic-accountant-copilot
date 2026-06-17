@@ -49,7 +49,7 @@ def test_export_bank_statement_facts_extracts_period_closing_balance_and_evidenc
             file_path="inputs/eStatement.pdf",
             document_id="doc_bank",
             page="1",
-            quote="Statement Period 1 Jan 2025 - 31 Jan 2025 Closing Balance $30,325.01 CR Business Transaction Account",
+            quote="Statement Period 1 Jan 2025 - 31 Jan 2025 Opening Balance $30,211.09 CR Closing Balance $30,325.01 CR Business Transaction Account",
             confidence="text_pdf",
         )
     )
@@ -71,10 +71,58 @@ def test_export_bank_statement_facts_extracts_period_closing_balance_and_evidenc
     fact = payload["facts"][0]
     assert fact["statement_period_start"] == "1 Jan 2025"
     assert fact["statement_period_end"] == "31 Jan 2025"
+    assert fact["opening_balance"] == "$30,211.09"
+    assert fact["opening_balance_sign"] == "CR"
     assert fact["closing_balance"] == "$30,325.01"
     assert fact["closing_balance_sign"] == "CR"
     assert fact["status"] == "extracted"
     assert fact["evidence_id"] == "raw_001_page_001"
+
+
+def test_export_bank_statement_facts_flags_missing_opening_balance(tmp_path: Path):
+    state = EngagementState(
+        engagement_id="bank_missing_opening_test",
+        entity_name="Bank Trust",
+        entity_type="trust",
+        fy_start="2024-07-01",
+        fy_end="2025-06-30",
+    )
+    state.source_documents.append(
+        SourceDocument(
+            document_id="doc_bank",
+            file_path="inputs/bank.pdf",
+            document_type="bank_statement",
+            entity="Bank Trust",
+            period_start="2024-07-01",
+            period_end="2025-06-30",
+            source_hash="abc123",
+        )
+    )
+    state.evidence.append(
+        EvidenceRef(
+            evidence_id="raw_003_page_001",
+            source_type="bank_statement",
+            file_path="inputs/bank.pdf",
+            document_id="doc_bank",
+            page="1",
+            quote="Statement Period 1 Feb 2025 - 28 Feb 2025 Closing Balance $42,100.00 DR Business Transaction Account",
+            confidence="text_pdf",
+        )
+    )
+    state_path = tmp_path / "state.json"
+    state_path.write_text(state.model_dump_json())
+    output = tmp_path / "bank_statement_facts.md"
+
+    result = run_cli("export-bank-statement-facts", "--state", str(state_path), "--output", str(output))
+
+    assert result.returncode == 1
+    payload = json.loads((tmp_path / "bank_statement_facts.json").read_text())
+    assert payload["facts"][0]["closing_balance"] == "$42,100.00"
+    finding = payload["findings"][0]
+    assert finding["category"] == "bank_statement_fact_missing"
+    assert finding["document_id"] == "doc_bank"
+    assert finding["evidence_id"] == "raw_003_page_001"
+    assert finding["missing_fields"] == ["opening_balance"]
 
 
 def test_export_bank_statement_facts_flags_missing_period_or_balance(tmp_path: Path):

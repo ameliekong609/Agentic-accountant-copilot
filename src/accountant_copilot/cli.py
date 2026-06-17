@@ -695,19 +695,30 @@ _ALT_PERIOD_RE = re.compile(
     r"(?P<start>\d{1,2}/\d{1,2}/\d{2,4})\s+STATEMENT OPENING BALANCE.*?(?P<end>\d{1,2}/\d{1,2}/\d{2,4})\s+CLOSING BALANCE",
     re.IGNORECASE,
 )
+_OPENING_BALANCE_RE = re.compile(
+    r"Opening Balance\s+(?P<amount>(?:[$€£]\s?)?[+-]?\s?\d[\d,]*(?:\.\d{2})?)\s*(?P<sign>CR|DR)?",
+    re.IGNORECASE,
+)
 _CLOSING_BALANCE_RE = re.compile(
     r"Closing Balance\s+(?P<amount>(?:[$€£]\s?)?[+-]?\s?\d[\d,]*(?:\.\d{2})?)\s*(?P<sign>CR|DR)?",
     re.IGNORECASE,
 )
-_ACCOUNT_NUMBER_RE = re.compile(r"Account Number\s+(?P<account>[^\n]{0,80}?)(?:Statement Period|Closing Balance|Business|$)", re.IGNORECASE)
+_ACCOUNT_NUMBER_RE = re.compile(r"Account Number\s+(?P<account>[^\n]{0,80}?)(?:Statement Period|Opening Balance|Closing Balance|Business|$)", re.IGNORECASE)
+
+
+def _clean_money_amount(amount: str | None) -> str | None:
+    if amount is None:
+        return None
+    return amount.replace("$ ", "$").replace("€ ", "€").replace("£ ", "£").replace("+ ", "").replace("+", "").strip()
 
 
 def _extract_bank_fact_from_evidence(document: SourceDocument, evidence: EvidenceRef) -> dict | None:
     quote = " ".join((evidence.quote or "").split())
     period_match = _PERIOD_RE.search(quote) or _ALT_PERIOD_RE.search(quote)
-    balance_match = _CLOSING_BALANCE_RE.search(quote)
+    opening_match = _OPENING_BALANCE_RE.search(quote)
+    closing_match = _CLOSING_BALANCE_RE.search(quote)
     account_match = _ACCOUNT_NUMBER_RE.search(quote)
-    if not period_match or not balance_match:
+    if not period_match or not closing_match:
         return None
     account_number_raw = account_match.group("account").strip() if account_match else None
     fact = {
@@ -718,8 +729,10 @@ def _extract_bank_fact_from_evidence(document: SourceDocument, evidence: Evidenc
         "account_number_raw": account_number_raw or None,
         "statement_period_start": period_match.group("start"),
         "statement_period_end": period_match.group("end"),
-        "closing_balance": balance_match.group("amount").replace("$ ", "$").replace("+ ", "").replace("+", "").strip(),
-        "closing_balance_sign": (balance_match.group("sign") or "").upper() or None,
+        "opening_balance": _clean_money_amount(opening_match.group("amount")) if opening_match else None,
+        "opening_balance_sign": (opening_match.group("sign") or "").upper() or None if opening_match else None,
+        "closing_balance": _clean_money_amount(closing_match.group("amount")),
+        "closing_balance_sign": (closing_match.group("sign") or "").upper() or None,
         "status": "extracted",
         "snippet": quote[:300],
     }
@@ -743,6 +756,19 @@ def _build_bank_statement_facts_payload(state: EngagementState) -> dict:
             if fact:
                 facts.append(fact)
                 extracted_document_ids.add(document_id)
+                missing_fields = [field for field in ("opening_balance",) if fact.get(field) is None]
+                if missing_fields:
+                    findings.append(
+                        {
+                            "category": "bank_statement_fact_missing",
+                            "document_id": document.document_id,
+                            "file_path": document.file_path,
+                            "evidence_id": evidence.evidence_id,
+                            "page": evidence.page,
+                            "missing_fields": missing_fields,
+                            "recommended_action": "Review source document and improve bank fact parser or mark evidence out of scope.",
+                        }
+                    )
         if evidence_items and document_id not in extracted_document_ids:
             first = sorted(evidence_items, key=lambda ev: (int(ev.page or 0), ev.evidence_id))[0]
             findings.append(
@@ -800,6 +826,7 @@ def _format_bank_statement_facts(payload: dict) -> str:
                 [
                     f"- `{fact['evidence_id']}` — `{fact['file_path']}` page {fact['page']}",
                     f"  - Statement period: {fact['statement_period_start']} to {fact['statement_period_end']}",
+                    f"  - Opening balance: {fact['opening_balance'] or 'not extracted'} {fact['opening_balance_sign'] or ''}".rstrip(),
                     f"  - Closing balance: {fact['closing_balance']} {fact['closing_balance_sign'] or ''}".rstrip(),
                     f"  - Account number/raw: {fact['account_number_raw'] or 'not extracted'}",
                     f"  - Snippet: {fact['snippet']}",
