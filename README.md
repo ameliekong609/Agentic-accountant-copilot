@@ -387,6 +387,10 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-invoice-review \
   --facts outputs/invoice_facts.json \
   --output outputs/invoice_review.md
 
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-distribution-tax-facts \
+  --state outputs/engagement_state.json \
+  --output outputs/distribution_tax_facts.md
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \
   --facts outputs/bank_statement_facts.json \
   --output outputs/bank_continuity.md

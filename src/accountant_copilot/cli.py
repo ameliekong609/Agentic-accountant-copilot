@@ -1256,6 +1256,161 @@ def _export_invoice_review_command(args: argparse.Namespace) -> int:
     return 0 if not payload["review_findings"] else 1
 
 
+_DISTRIBUTION_COMPONENT_LABELS = {
+    "net_cash_distribution": ["Net cash distribution", "Net distribution", "Total cash distribution"],
+    "cash_distribution": ["Cash Distribution", "Distribution Amount", "Amount paid", "Net amount payable"],
+    "interest": ["Interest"],
+    "franked_dividends": ["Dividends: franked", "Franked dividends", "Dividends - franked"],
+    "unfranked_dividends": ["Dividends: unfranked", "Unfranked dividends", "Dividends - unfranked"],
+    "foreign_income": ["Foreign income", "Assessable foreign source income"],
+    "capital_gains": ["Capital gains", "Capital gain"],
+    "foreign_income_tax_offset": ["Foreign income tax offset", "Foreign tax offset"],
+    "franking_credit_tax_offset": ["Franking credit tax offset", "Franking Credits / Tax Offsets", "Franking credit"],
+    "tfn_withholding": ["TFN amounts withheld", "TFN withholding tax", "Withholding tax"],
+    "non_resident_withholding": ["Non Resident Withholding Amount", "Non-resident withholding", "Non Resident Withholding"],
+}
+
+
+def _is_distribution_tax_evidence(evidence: EvidenceRef, document: SourceDocument | None = None) -> bool:
+    document_type = (document.document_type if document else evidence.source_type) or ""
+    quote = evidence.quote or ""
+    if document_type in {"investment_statement", "prior_year_financial_statements"}:
+        return bool(re.search(r"distribution|tax statement|AMIT|payment advice|components of distribution|withholding|franking", quote, re.IGNORECASE))
+    return bool(re.search(r"components of distribution|net cash distribution|payment advice|franking credit|foreign income tax offset", quote, re.IGNORECASE))
+
+
+def _extract_label_amount(quote: str, labels: list[str]) -> str | None:
+    money = r"(?P<amount>-?(?:[$€£]\s?)?\d[\d,]*(?:\.\d{2})|-)"
+    for label in labels:
+        pattern = re.compile(rf"{re.escape(label)}\s*(?:\([^)]*\))?\s*(?:[:\-])?\s*{money}", re.IGNORECASE)
+        match = pattern.search(quote)
+        if match:
+            raw = match.group("amount")
+            if raw == "-":
+                return "0.00"
+            return _clean_money_amount(raw)
+    return None
+
+
+def _extract_distribution_tax_fact(document: SourceDocument, evidence: EvidenceRef) -> dict | None:
+    quote = " ".join((evidence.quote or "").split())
+    if not _is_distribution_tax_evidence(evidence, document):
+        return None
+    components = {
+        component: amount
+        for component, labels in _DISTRIBUTION_COMPONENT_LABELS.items()
+        if (amount := _extract_label_amount(quote, labels)) is not None
+    }
+    payment_date = None
+    record_date = None
+    payment_match = re.search(r"Payment\s+date:?\s*(?P<date>\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}|\d{1,2}/\d{1,2}/\d{2,4})", quote, re.IGNORECASE)
+    record_match = re.search(r"Record\s+date:?\s*(?P<date>\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}|\d{1,2}/\d{1,2}/\d{2,4})", quote, re.IGNORECASE)
+    if payment_match:
+        payment_date = payment_match.group("date")
+    if record_match:
+        record_date = record_match.group("date")
+    if not components and not payment_date and not record_date:
+        return None
+    return {
+        "document_id": document.document_id,
+        "file_path": document.file_path,
+        "page": evidence.page,
+        "evidence_id": evidence.evidence_id,
+        "document_type": document.document_type,
+        "payment_date": payment_date,
+        "record_date": record_date,
+        "components": components,
+        "confidence": evidence.confidence,
+        "snippet": quote[:300],
+    }
+
+
+def _build_distribution_tax_facts_payload(state: EngagementState) -> dict:
+    documents = {doc.document_id: doc for doc in state.source_documents}
+    facts: list[dict] = []
+    findings: list[dict] = []
+    candidate_documents: set[str] = set()
+    extracted_documents: set[str] = set()
+    for evidence in state.evidence:
+        document = documents.get(evidence.document_id or "")
+        if not document or not _is_distribution_tax_evidence(evidence, document):
+            continue
+        candidate_documents.add(document.document_id)
+        fact = _extract_distribution_tax_fact(document, evidence)
+        if fact:
+            facts.append(fact)
+            extracted_documents.add(document.document_id)
+    for document_id in sorted(candidate_documents - extracted_documents):
+        document = documents[document_id]
+        findings.append(
+            {
+                "category": "distribution_tax_fact_extraction_incomplete",
+                "document_id": document.document_id,
+                "file_path": document.file_path,
+                "recommended_action": "Review distribution/tax statement evidence and improve parser or record an accountant decision.",
+            }
+        )
+    return {
+        "engagement_id": state.engagement_id,
+        "entity_name": state.entity_name,
+        "fact_type": "distribution_tax_facts",
+        "facts": facts,
+        "findings": findings,
+        "summary": {
+            "distribution_tax_documents": len(candidate_documents),
+            "facts_extracted": len(facts),
+            "findings": len(findings),
+        },
+    }
+
+
+def _format_distribution_tax_facts(payload: dict) -> str:
+    lines = [f"# Distribution and Tax Facts — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend([
+        f"- Distribution/tax documents: {summary['distribution_tax_documents']}",
+        f"- Facts extracted: {summary['facts_extracted']}",
+        f"- Findings: {summary['findings']}",
+        "",
+    ])
+    if payload["facts"]:
+        lines.append("## Extracted distribution/tax facts")
+        for fact in payload["facts"]:
+            lines.extend([
+                f"- `{fact['evidence_id']}` — `{fact['file_path']}` page {fact['page']}",
+                f"  - Payment date: {fact['payment_date'] or 'not extracted'}",
+                f"  - Record date: {fact['record_date'] or 'not extracted'}",
+                f"  - Confidence: {fact['confidence']}",
+            ])
+            if fact["components"]:
+                lines.append("  - Components:")
+                for component, amount in sorted(fact["components"].items()):
+                    lines.append(f"    - {component}: {amount}")
+            lines.append(f"  - Snippet: {fact['snippet']}")
+        lines.append("")
+    if payload["findings"]:
+        lines.append("## Findings needing review")
+        for finding in payload["findings"]:
+            lines.extend([
+                f"- {finding['category']}: `{finding['file_path']}`",
+                f"  - Action: {finding['recommended_action']}",
+            ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_distribution_tax_facts_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    payload = _build_distribution_tax_facts_payload(state)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_distribution_tax_facts(payload))
+    json_output = output.with_suffix(".json")
+    json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported distribution/tax facts → {output}")
+    print(f"Exported distribution/tax facts JSON → {json_output}")
+    return 0 if not payload["findings"] else 1
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -2856,6 +3011,14 @@ def build_parser() -> argparse.ArgumentParser:
     invoice_review_parser.add_argument("--facts", default="outputs/invoice_facts.json")
     invoice_review_parser.add_argument("--output", default="outputs/invoice_review.md")
     invoice_review_parser.set_defaults(func=_export_invoice_review_command)
+
+    distribution_tax_parser = subparsers.add_parser(
+        "export-distribution-tax-facts",
+        help="Extract evidence-linked distribution and tax statement facts from source evidence.",
+    )
+    distribution_tax_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    distribution_tax_parser.add_argument("--output", default="outputs/distribution_tax_facts.md")
+    distribution_tax_parser.set_defaults(func=_export_distribution_tax_facts_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",

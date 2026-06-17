@@ -39,7 +39,12 @@
    - proposes candidate treatment such as portfolio management fee/service expense, GST review, period allocation, and payment/matching handling
    - explicitly sets `approved=false`; no accounting treatment is auto-approved from OCR or parsed invoice text
 
-7. `export-bank-continuity`
+7. `export-distribution-tax-facts`
+   - extracts evidence-linked distribution and tax statement facts from investment statement evidence
+   - captures payment date, record date, cash/net distribution, interest/dividend/capital-gain-style components, tax offsets, and withholding when labels are parseable
+   - reports distribution/tax candidate documents where numeric component lines are not parseable instead of guessing
+
+8. `export-bank-continuity`
    - compares sequential bank statement closing balances to next opening balances
    - groups statements by inferred account key before comparing
    - accepts same-day or next-day period bridges, because different banks label statement boundaries differently
@@ -54,7 +59,7 @@ This is high-level document/content discovery only. It is not final accounting t
 Add domain-specific fact extractors for:
 
 - bank statement opening/closing balances and statement periods
-- distribution/tax statement income components
+- distribution/tax statement accounting review layer
 - broker trade confirmations and settlement amounts
 - prior-year financial statement comparative balances
 - Excel workbook/sheet/row/cell evidence when source workbooks are supplied
