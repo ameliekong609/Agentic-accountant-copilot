@@ -167,3 +167,13 @@ State-changing orchestration can record transition hashes:
 ```
 
 Evidence records may include `document_id` when linked to a source document register entry.
+
+## Intake, matching, and draft output command contracts
+
+`ingest-source-document` currently supports CSV intake. It records one `SourceDocument` and creates row-level `EvidenceRef` entries with `document_id`, row number, quote, amount, and date where columns are available.
+
+`match-transactions` performs deterministic exact date/amount matching between bank and supporting event CSV files. It writes a JSON match artifact with `matches`, `unmatched_bank_transactions`, and `unmatched_events`; unmatched rows create idempotent review exceptions from `deterministic_matching`.
+
+`render-draft-statements` writes a markdown draft financial statement artifact, writes a verifier result JSON, and registers `out_draft_statements` in `output_artifacts`.
+
+`run-demo` creates safe sample blocked and clean engagement flows under the requested output directory. Do not place client data in demo fixtures.

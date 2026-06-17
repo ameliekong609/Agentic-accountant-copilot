@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import sys
@@ -961,6 +962,204 @@ def _export_release_manifest_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_csv_records(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="") as handle:
+        return [dict(row) for row in csv.DictReader(handle)]
+
+
+def _csv_quote(row: dict[str, str]) -> str:
+    return ",".join(str(value) for value in row.values())
+
+
+def _ingest_source_document_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    before = state_hash(state)
+    source_path = Path(args.file_path)
+    if not source_path.exists():
+        print(f"Source document not found: {source_path}", file=sys.stderr)
+        return 2
+    if source_path.suffix.lower() != ".csv":
+        print("Only CSV source-document intake is currently supported", file=sys.stderr)
+        return 2
+    document = SourceDocument(
+        document_id=args.document_id,
+        file_path=str(source_path),
+        document_type=args.document_type,
+        entity=args.entity,
+        period_start=args.period_start,
+        period_end=args.period_end,
+        source_hash=_sha256_file(source_path),
+        notes=args.notes,
+    )
+    state.source_documents = [doc for doc in state.source_documents if doc.document_id != document.document_id]
+    state.source_documents.append(document)
+    prefix = f"ev_{document.document_id}_row_"
+    state.evidence = [ev for ev in state.evidence if not ev.evidence_id.startswith(prefix)]
+    for idx, row in enumerate(_read_csv_records(source_path), start=2):
+        quote = _csv_quote(row)
+        state.evidence.append(
+            EvidenceRef(
+                evidence_id=f"{prefix}{idx}",
+                source_type=args.document_type,
+                file_path=str(source_path),
+                row=str(idx),
+                quote=quote,
+                amount=row.get("amount") or row.get("Amount"),
+                date=row.get("date") or row.get("Date"),
+                document_id=document.document_id,
+            )
+        )
+    _record_state_transition(state, command="ingest-source-document", before_hash=before, summary=f"Ingested {document.document_id}.")
+    save_engagement_state(state_path, state)
+    print(f"Ingested source document {document.document_id}")
+    return 0
+
+
+def _match_transactions_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    before = state_hash(state)
+    bank_rows = _read_csv_records(Path(args.bank_csv))
+    event_rows = _read_csv_records(Path(args.events_csv))
+    unused_events = set(range(len(event_rows)))
+    matches: list[dict[str, object]] = []
+    unmatched_bank: list[dict[str, str]] = []
+    for bank_idx, bank in enumerate(bank_rows):
+        match_idx = None
+        for event_idx in list(unused_events):
+            event = event_rows[event_idx]
+            if (bank.get("date") or bank.get("Date")) == (event.get("date") or event.get("Date")) and str(bank.get("amount") or bank.get("Amount")) == str(event.get("amount") or event.get("Amount")):
+                match_idx = event_idx
+                break
+        if match_idx is None:
+            unmatched_bank.append(bank)
+        else:
+            unused_events.remove(match_idx)
+            matches.append({"bank_row": bank_idx + 2, "event_row": match_idx + 2, "match_type": "exact_date_amount", "amount": bank.get("amount") or bank.get("Amount")})
+    unmatched_events = [event_rows[idx] for idx in sorted(unused_events)]
+    payload = {"matches": matches, "unmatched_bank_transactions": unmatched_bank, "unmatched_events": unmatched_events}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    state.matches_ref = str(output)
+    state.exceptions = [item for item in state.exceptions if item.source != "deterministic_matching"]
+    for idx, row in enumerate(unmatched_bank, start=1):
+        state.exceptions.append(
+            ExceptionItem(
+                exception_id=f"matching_unmatched_bank_{idx:04d}",
+                source="deterministic_matching",
+                severity=ExceptionSeverity.HIGH,
+                category="unmatched_bank_transaction",
+                description=f"Unmatched bank transaction: {_csv_quote(row)}",
+                recommended_action="Classify or match this bank transaction before release.",
+                requires_human_approval=True,
+            )
+        )
+    for idx, row in enumerate(unmatched_events, start=1):
+        state.exceptions.append(
+            ExceptionItem(
+                exception_id=f"matching_unmatched_event_{idx:04d}",
+                source="deterministic_matching",
+                severity=ExceptionSeverity.MEDIUM,
+                category="unmatched_event",
+                description=f"Unmatched supporting event: {_csv_quote(row)}",
+                recommended_action="Confirm whether this supporting event requires an adjustment.",
+                requires_human_approval=True,
+            )
+        )
+    _record_state_transition(state, command="match-transactions", before_hash=before, summary=f"Matched {len(matches)} transaction pairs.")
+    save_engagement_state(state_path, state)
+    print(f"Matched {len(matches)} transaction pairs; open exceptions: {len(unmatched_bank) + len(unmatched_events)}")
+    return 0 if not unmatched_bank and not unmatched_events else 1
+
+
+def _render_draft_statements_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    before = state_hash(state)
+    payload = inspect_engagement(state)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Draft Financial Statements",
+        "",
+        f"Entity: {state.entity_name}",
+        f"Financial year: {state.fy_start} to {state.fy_end}",
+        f"Readiness: {payload['readiness_summary']}",
+        "",
+        "## Chart of accounts",
+    ]
+    if state.chart_accounts:
+        for account in state.chart_accounts:
+            lines.append(f"- {account.code} {account.name}: {account.opening_balance}")
+    else:
+        lines.append("- No structured CoA accounts recorded.")
+    lines.extend(["", "## Adjustments"])
+    if state.adjustment_proposals:
+        for adjustment in state.adjustment_proposals:
+            lines.append(f"- {adjustment.description}: {adjustment.amount}")
+    else:
+        lines.append("- No adjustment proposals recorded.")
+    output.write_text("\n".join(lines) + "\n")
+    status = "passed" if payload["final_output_allowed"] else "failed"
+    verifier = {"output_id": "out_draft_statements", "file_path": str(output), "artifact_type": "draft_financial_statements", "status": status, "findings": [] if status == "passed" else [{"check": "readiness", "detail": payload["readiness_summary"]}]}
+    verifier_path = Path(args.verifier_result)
+    verifier_path.parent.mkdir(parents=True, exist_ok=True)
+    verifier_path.write_text(json.dumps(verifier, indent=2, sort_keys=True))
+    artifact = OutputArtifact(
+        output_id="out_draft_statements",
+        file_path=str(output),
+        artifact_type="draft_financial_statements",
+        verifier_status=status,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        source_state_hash=before,
+    )
+    state.output_artifacts = [item for item in state.output_artifacts if item.output_id != artifact.output_id]
+    state.output_artifacts.append(artifact)
+    state.statements_ref = str(output)
+    _record_state_transition(state, command="render-draft-statements", before_hash=before, summary=f"Rendered draft statements with verifier status {status}.")
+    save_engagement_state(state_path, state)
+    print(f"Rendered draft statements → {output}")
+    return 0 if status == "passed" else 1
+
+
+def _run_demo_command(args: argparse.Namespace) -> int:
+    base = Path(args.output_dir)
+    blocked = base / "blocked"
+    clean = base / "clean"
+    blocked.mkdir(parents=True, exist_ok=True)
+    clean.mkdir(parents=True, exist_ok=True)
+    blocked_state = EngagementState(
+        engagement_id="demo_blocked",
+        entity_name="Demo Trust",
+        entity_type="discretionary_trust",
+        fy_start="2024-07-01",
+        fy_end="2025-06-30",
+        documents_ref="outputs/documents.json",
+        coa_ref="outputs/coa.json",
+        exceptions=[ExceptionItem(source="demo", severity=ExceptionSeverity.HIGH, category="unmatched_bank_transaction", description="Demo item needs review.", recommended_action="Classify the demo item.", requires_human_approval=True)],
+    )
+    blocked_state_path = blocked / "state.json"
+    save_engagement_state(blocked_state_path, blocked_state)
+    _run_engagement_command(argparse.Namespace(state=str(blocked_state_path), review_packet_dir=str(blocked / "review_packet"), release_manifest=str(blocked / "release_manifest.json")))
+    clean_state = EngagementState(
+        engagement_id="demo_clean",
+        entity_name="Demo Trust",
+        entity_type="discretionary_trust",
+        fy_start="2024-07-01",
+        fy_end="2025-06-30",
+        documents_ref="outputs/documents.json",
+        coa_ref="outputs/coa.json",
+        decisions=[AccountantDecision(decision_id="decision_final_signoff_0001", question="release?", selected_option="final_signoff", rationale="Approved demo.", status=DecisionStatus.APPROVED, approved_by="Demo Reviewer")],
+    )
+    clean_state_path = clean / "state.json"
+    save_engagement_state(clean_state_path, clean_state)
+    _run_engagement_command(argparse.Namespace(state=str(clean_state_path), review_packet_dir=str(clean / "review_packet"), release_manifest=str(clean / "release_manifest.json")))
+    print(f"Demo outputs written → {base}")
+    return 0
+
+
 def _import_verifier_result_command(args: argparse.Namespace) -> int:
     state_path = Path(args.state)
     state = load_engagement_state(state_path)
@@ -977,6 +1176,7 @@ def _import_verifier_result_command(args: argparse.Namespace) -> int:
     )
     state.output_artifacts = [item for item in state.output_artifacts if item.output_id != artifact.output_id]
     state.output_artifacts.append(artifact)
+    state.exceptions = [item for item in state.exceptions if not item.exception_id.startswith(f"output_verifier_{artifact.output_id}_")]
     if status != "passed":
         for idx, finding in enumerate(payload.get("findings", []) or [{"check": "verifier", "detail": "Verifier failed."}], start=1):
             check = finding.get("check", "verifier")
@@ -1037,6 +1237,18 @@ def _export_review_ui_command(args: argparse.Namespace) -> int:
         f"<li>{_html_escape(ev.evidence_id)} — document={_html_escape(ev.document_id)} quote={_html_escape(ev.quote)}</li>"
         for ev in state.evidence
     ) or "<li>No structured evidence recorded.</li>"
+    decision_template = json.dumps({
+        "engagement_id": state.engagement_id,
+        "decisions": [
+            {
+                "exception_id": item.exception_id,
+                "action": "resolved",
+                "approved_by": "Reviewer Name",
+                "rationale": "Document accountant conclusion here.",
+            }
+            for item in state.open_exceptions()
+        ],
+    }, indent=2)
     html = f"""<!doctype html>
 <html>
 <head><meta charset=\"utf-8\"><title>Accountant Review — {_html_escape(state.entity_name)}</title></head>
@@ -1047,6 +1259,9 @@ def _export_review_ui_command(args: argparse.Namespace) -> int:
 <h2>Evidence</h2><ul>{evidence_items}</ul>
 <h2>CoA accounts</h2><ul>{''.join(f'<li>{_html_escape(a.account_id)} [{_html_escape(a.status)}] {_html_escape(a.name)}</li>' for a in state.chart_accounts) or '<li>No CoA accounts recorded.</li>'}</ul>
 <h2>Adjustments</h2><ul>{''.join(f'<li>{_html_escape(a.adjustment_id)} [{_html_escape(a.status)}] {_html_escape(a.description)}</li>' for a in state.adjustment_proposals) or '<li>No adjustments recorded.</li>'}</ul>
+<h2>Copy decision JSON</h2>
+<p>Save this as <code>review_decisions_template.json</code>, edit the rationale/actions, then apply with <code>review-exceptions --decisions</code>.</p>
+<textarea rows=\"16\" cols=\"100\">{_html_escape(decision_template)}</textarea>
 </body>
 </html>
 """
@@ -1176,6 +1391,46 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--review-packet-dir", default="outputs/review_packet")
     run_parser.add_argument("--release-manifest", default="outputs/release_manifest.json")
     run_parser.set_defaults(func=_run_engagement_command)
+
+    ingest_parser = subparsers.add_parser(
+        "ingest-source-document",
+        help="Ingest a CSV source document into the document and evidence registers.",
+    )
+    ingest_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    ingest_parser.add_argument("--document-id", required=True)
+    ingest_parser.add_argument("--file-path", required=True)
+    ingest_parser.add_argument("--document-type", required=True)
+    ingest_parser.add_argument("--entity", required=True)
+    ingest_parser.add_argument("--period-start", required=True)
+    ingest_parser.add_argument("--period-end", required=True)
+    ingest_parser.add_argument("--notes", default=None)
+    ingest_parser.set_defaults(func=_ingest_source_document_command)
+
+    match_parser = subparsers.add_parser(
+        "match-transactions",
+        help="Run deterministic date/amount matching and create review exceptions.",
+    )
+    match_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    match_parser.add_argument("--bank-csv", required=True)
+    match_parser.add_argument("--events-csv", required=True)
+    match_parser.add_argument("--output", required=True)
+    match_parser.set_defaults(func=_match_transactions_command)
+
+    render_parser = subparsers.add_parser(
+        "render-draft-statements",
+        help="Render a draft financial statement artifact and verifier result.",
+    )
+    render_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    render_parser.add_argument("--output", required=True)
+    render_parser.add_argument("--verifier-result", required=True)
+    render_parser.set_defaults(func=_render_draft_statements_command)
+
+    demo_parser = subparsers.add_parser(
+        "run-demo",
+        help="Create a safe sample engagement demo with blocked and clean paths.",
+    )
+    demo_parser.add_argument("--output-dir", required=True)
+    demo_parser.set_defaults(func=_run_demo_command)
 
     validate_parser = subparsers.add_parser(
         "validate-state",

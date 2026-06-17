@@ -66,6 +66,21 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli run-engagement \
   --review-packet-dir outputs/review_packet \
   --release-manifest outputs/release_manifest.json
 
+PYTHONPATH=src python3.11 -m accountant_copilot.cli ingest-source-document \
+  --state outputs/engagement_state.json \
+  --document-id doc_bank_001 \
+  --file-path source/bank.csv \
+  --document-type bank_statement \
+  --entity "XYZ Trust" \
+  --period-start 2025-01-01 \
+  --period-end 2025-01-31
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli match-transactions \
+  --state outputs/engagement_state.json \
+  --bank-csv source/bank.csv \
+  --events-csv source/events.csv \
+  --output outputs/matches.json
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli record-document \
   --state outputs/engagement_state.json \
   --document-id doc_bank_001 \
@@ -218,6 +233,11 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli record-output \
   --artifact-type financial_statements \
   --verifier-status passed
 
+PYTHONPATH=src python3.11 -m accountant_copilot.cli render-draft-statements \
+  --state outputs/engagement_state.json \
+  --output outputs/draft_financial_statements.md \
+  --verifier-result outputs/verifier_result.json
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli import-verifier-result \
   --state outputs/engagement_state.json \
   --verifier-result outputs/verifier_result.json
@@ -234,6 +254,9 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-release-manifest \
   --output outputs/release_manifest.json \
   --workpaper-pack outputs/workpaper_pack \
   --audit-trail outputs/audit_trail.md
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli run-demo \
+  --output-dir outputs/demo
 ```
 
 Import source pipeline control issues into a new engagement state exception queue:

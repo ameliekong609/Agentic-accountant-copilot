@@ -12,6 +12,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Install test dependencies
+        run: python3.11 -m pip install -e .[dev]
       - name: Run tests
         run: PYTHONPATH=src python3.11 -m pytest -q
       - name: Compile check
