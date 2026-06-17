@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -712,6 +712,17 @@ def _clean_money_amount(amount: str | None) -> str | None:
     return amount.replace("$ ", "$").replace("€ ", "€").replace("£ ", "£").replace("+ ", "").replace("+", "").strip()
 
 
+def _infer_bank_account_key(quote: str, account_number_raw: str | None) -> str:
+    if account_number_raw:
+        return f"account:{account_number_raw}"
+    product_match = re.search(r"Business Transaction Account\s+\d+", quote, re.IGNORECASE)
+    if product_match:
+        return product_match.group(0).lower().replace(" ", "_")
+    if re.search(r"Statement No\.\s+\d+", quote, re.IGNORECASE):
+        return "statement_no_bank_account"
+    return "unknown_bank_account"
+
+
 def _extract_bank_fact_from_evidence(document: SourceDocument, evidence: EvidenceRef) -> dict | None:
     quote = " ".join((evidence.quote or "").split())
     period_match = _PERIOD_RE.search(quote) or _ALT_PERIOD_RE.search(quote)
@@ -721,12 +732,14 @@ def _extract_bank_fact_from_evidence(document: SourceDocument, evidence: Evidenc
     if not period_match or not closing_match:
         return None
     account_number_raw = account_match.group("account").strip() if account_match else None
+    account_key_raw = _infer_bank_account_key(quote, account_number_raw)
     fact = {
         "document_id": document.document_id,
         "file_path": document.file_path,
         "page": evidence.page,
         "evidence_id": evidence.evidence_id,
         "account_number_raw": account_number_raw or None,
+        "account_key_raw": account_key_raw,
         "statement_period_start": period_match.group("start"),
         "statement_period_end": period_match.group("end"),
         "opening_balance": _clean_money_amount(opening_match.group("amount")) if opening_match else None,
@@ -829,6 +842,7 @@ def _format_bank_statement_facts(payload: dict) -> str:
                     f"  - Opening balance: {fact['opening_balance'] or 'not extracted'} {fact['opening_balance_sign'] or ''}".rstrip(),
                     f"  - Closing balance: {fact['closing_balance']} {fact['closing_balance_sign'] or ''}".rstrip(),
                     f"  - Account number/raw: {fact['account_number_raw'] or 'not extracted'}",
+                    f"  - Account key/raw: {fact.get('account_key_raw') or 'unknown_bank_account'}",
                     f"  - Snippet: {fact['snippet']}",
                 ]
             )
@@ -856,6 +870,171 @@ def _export_bank_statement_facts_command(args: argparse.Namespace) -> int:
     json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
     print(f"Exported bank statement facts → {output}")
     print(f"Exported bank statement facts JSON → {json_output}")
+    return 0 if not payload["findings"] else 1
+
+
+def _parse_bank_statement_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    for fmt in ("%d %b %Y", "%d %B %Y", "%d/%m/%Y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _bank_balance_label(fact: dict, balance_field: str, sign_field: str) -> str | None:
+    amount = fact.get(balance_field)
+    if not amount:
+        return None
+    sign = fact.get(sign_field)
+    return f"{amount} {sign}" if sign else str(amount)
+
+
+def _normalise_balance_for_compare(fact: dict, balance_field: str, sign_field: str) -> tuple[str | None, str | None]:
+    amount = fact.get(balance_field)
+    if not amount:
+        return (None, None)
+    cleaned = _clean_money_amount(str(amount)) or ""
+    comparable = re.sub(r"[^0-9.-]", "", cleaned)
+    return (comparable, (fact.get(sign_field) or "").upper() or None)
+
+
+def _balances_match(prior_close: tuple[str | None, str | None], current_open: tuple[str | None, str | None]) -> bool:
+    if prior_close[0] is None or current_open[0] is None:
+        return False
+    if prior_close[0] != current_open[0]:
+        return False
+    if prior_close[1] and current_open[1] and prior_close[1] != current_open[1]:
+        return False
+    return True
+
+
+def _build_bank_continuity_payload(facts_payload: dict) -> dict:
+    grouped_facts: dict[str, list[dict]] = {}
+    for fact in facts_payload.get("facts", []):
+        grouped_facts.setdefault(fact.get("account_key_raw") or "unknown_bank_account", []).append(fact)
+    comparisons: list[dict] = []
+    findings: list[dict] = []
+    for account_key, account_facts in sorted(grouped_facts.items()):
+        facts = sorted(
+            account_facts,
+            key=lambda fact: (_parse_bank_statement_date(fact.get("statement_period_start")) or datetime.max, fact.get("evidence_id") or ""),
+        )
+        seen_periods: dict[tuple[str | None, str | None], dict] = {}
+        for fact in facts:
+            period_key = (fact.get("statement_period_start"), fact.get("statement_period_end"))
+            if period_key in seen_periods:
+                findings.append(
+                    {
+                        "category": "bank_duplicate_period",
+                        "account_key_raw": account_key,
+                        "prior_evidence_id": seen_periods[period_key].get("evidence_id"),
+                        "current_evidence_id": fact.get("evidence_id"),
+                        "statement_period_start": period_key[0],
+                        "statement_period_end": period_key[1],
+                        "recommended_action": "Review duplicate bank statement periods before relying on continuity checks.",
+                    }
+                )
+            seen_periods[period_key] = fact
+
+        for prior, current in zip(facts, facts[1:]):
+            prior_close = _normalise_balance_for_compare(prior, "closing_balance", "closing_balance_sign")
+            current_open = _normalise_balance_for_compare(current, "opening_balance", "opening_balance_sign")
+            prior_end = _parse_bank_statement_date(prior.get("statement_period_end"))
+            current_start = _parse_bank_statement_date(current.get("statement_period_start"))
+            comparison = {
+                "account_key_raw": account_key,
+                "prior_evidence_id": prior.get("evidence_id"),
+                "current_evidence_id": current.get("evidence_id"),
+                "prior_period_end": prior.get("statement_period_end"),
+                "current_period_start": current.get("statement_period_start"),
+                "prior_closing_balance": _bank_balance_label(prior, "closing_balance", "closing_balance_sign"),
+                "current_opening_balance": _bank_balance_label(current, "opening_balance", "opening_balance_sign"),
+                "status": "matched" if _balances_match(prior_close, current_open) else "needs_review",
+            }
+            comparisons.append(comparison)
+            if prior_end and current_start and current_start not in {prior_end, prior_end + timedelta(days=1)}:
+                findings.append(
+                    {
+                        "category": "bank_period_gap_or_overlap",
+                        "account_key_raw": account_key,
+                        "prior_evidence_id": prior.get("evidence_id"),
+                        "current_evidence_id": current.get("evidence_id"),
+                        "prior_period_end": prior.get("statement_period_end"),
+                        "current_period_start": current.get("statement_period_start"),
+                        "recommended_action": "Review whether bank statement periods are missing, duplicated, or overlapping.",
+                    }
+                )
+            if comparison["status"] != "matched":
+                missing_fields = []
+                if prior_close[0] is None:
+                    missing_fields.append("prior_closing_balance")
+                if current_open[0] is None:
+                    missing_fields.append("current_opening_balance")
+                finding = {
+                    "category": "bank_continuity_missing_balance" if missing_fields else "bank_continuity_break",
+                    "account_key_raw": account_key,
+                    "prior_evidence_id": prior.get("evidence_id"),
+                    "current_evidence_id": current.get("evidence_id"),
+                    "prior_closing_balance": comparison["prior_closing_balance"],
+                    "current_opening_balance": comparison["current_opening_balance"],
+                    "missing_fields": missing_fields,
+                    "recommended_action": "Review source statements before transaction extraction or bank-to-TB tie-out.",
+                }
+                findings.append(finding)
+    return {
+        "engagement_id": facts_payload.get("engagement_id"),
+        "entity_name": facts_payload.get("entity_name"),
+        "check_type": "bank_statement_continuity",
+        "comparisons": comparisons,
+        "findings": findings,
+        "summary": {"comparisons": len(comparisons), "findings": len(findings)},
+    }
+
+
+def _format_bank_continuity(payload: dict) -> str:
+    lines = [f"# Bank Continuity Check — {payload.get('entity_name')}", ""]
+    summary = payload["summary"]
+    lines.extend([f"- Comparisons: {summary['comparisons']}", f"- Findings: {summary['findings']}", ""])
+    if payload["comparisons"]:
+        lines.append("## Comparisons")
+        for comparison in payload["comparisons"]:
+            lines.extend(
+                [
+                    f"- `{comparison['prior_evidence_id']}` → `{comparison['current_evidence_id']}`: {comparison['status']}",
+                    f"  - Account key/raw: {comparison.get('account_key_raw') or 'unknown_bank_account'}",
+                    f"  - Prior closing: {comparison['prior_closing_balance'] or 'not extracted'}",
+                    f"  - Current opening: {comparison['current_opening_balance'] or 'not extracted'}",
+                    f"  - Period bridge: {comparison['prior_period_end']} → {comparison['current_period_start']}",
+                ]
+            )
+        lines.append("")
+    if payload["findings"]:
+        lines.append("## Findings needing review")
+        for finding in payload["findings"]:
+            lines.extend(
+                [
+                    f"- {finding['category']}: `{finding.get('prior_evidence_id')}` → `{finding.get('current_evidence_id')}`",
+                    f"  - Prior closing: {finding.get('prior_closing_balance') or 'n/a'}",
+                    f"  - Current opening: {finding.get('current_opening_balance') or 'n/a'}",
+                    f"  - Action: {finding['recommended_action']}",
+                ]
+            )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_bank_continuity_command(args: argparse.Namespace) -> int:
+    facts_payload = json.loads(Path(args.facts).read_text())
+    payload = _build_bank_continuity_payload(facts_payload)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_bank_continuity(payload))
+    json_output = output.with_suffix(".json")
+    json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported bank continuity check → {output}")
+    print(f"Exported bank continuity check JSON → {json_output}")
     return 0 if not payload["findings"] else 1
 
 
@@ -2229,11 +2408,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     bank_facts_parser = subparsers.add_parser(
         "export-bank-statement-facts",
-        help="Extract bank statement periods and closing balances from page evidence.",
+        help="Extract bank statement periods, opening balances, and closing balances from page evidence.",
     )
     bank_facts_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     bank_facts_parser.add_argument("--output", default="outputs/bank_statement_facts.md")
     bank_facts_parser.set_defaults(func=_export_bank_statement_facts_command)
+
+    bank_continuity_parser = subparsers.add_parser(
+        "export-bank-continuity",
+        help="Compare sequential bank statement closing and opening balances.",
+    )
+    bank_continuity_parser.add_argument("--facts", default="outputs/bank_statement_facts.json")
+    bank_continuity_parser.add_argument("--output", default="outputs/bank_continuity.md")
+    bank_continuity_parser.set_defaults(func=_export_bank_continuity_command)
 
     evidence_parser = subparsers.add_parser(
         "record-evidence",

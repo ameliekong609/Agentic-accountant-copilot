@@ -374,4 +374,8 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-document-inventory \
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-statement-facts \
   --state outputs/engagement_state.json \
   --output outputs/bank_statement_facts.md
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \
+  --facts outputs/bank_statement_facts.json \
+  --output outputs/bank_continuity.md
 ```

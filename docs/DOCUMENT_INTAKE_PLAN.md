@@ -22,6 +22,12 @@
    - links every extracted fact back to its `EvidenceRef`
    - reports missing period/opening/closing balance findings instead of guessing
 
+4. `export-bank-continuity`
+   - compares sequential bank statement closing balances to next opening balances
+   - groups statements by inferred account key before comparing
+   - accepts same-day or next-day period bridges, because different banks label statement boundaries differently
+   - reports continuity breaks, missing opening/closing balances, duplicate periods, and period gaps instead of guessing
+
 ## Current boundary
 
 This is high-level document/content discovery only. It is not final accounting treatment, reconciliation, journal generation, or financial statement sign-off. The source quote contract still applies: no accounting number should enter later workflows without file/page/row evidence and verifier checks.

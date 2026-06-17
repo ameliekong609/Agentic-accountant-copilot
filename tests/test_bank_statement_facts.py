@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from accountant_copilot.state.artifacts import SourceDocument
 from accountant_copilot.state.engagement import EngagementState
 from accountant_copilot.state.evidence import EvidenceRef
@@ -168,3 +170,108 @@ def test_export_bank_statement_facts_flags_missing_period_or_balance(tmp_path: P
     assert finding["document_id"] == "doc_bank"
     assert finding["evidence_id"] == "raw_002_page_001"
     assert set(finding["missing_fields"]) == {"statement_period", "closing_balance"}
+
+
+def test_export_bank_continuity_flags_balance_breaks(tmp_path: Path):
+    facts_path = tmp_path / "bank_statement_facts.json"
+    facts_path.write_text(
+        json.dumps(
+            {
+                "engagement_id": "bank_continuity_test",
+                "entity_name": "Bank Trust",
+                "fact_type": "bank_statement_facts",
+                "facts": [
+                    {
+                        "document_id": "doc_jan",
+                        "file_path": "inputs/jan.pdf",
+                        "page": "1",
+                        "evidence_id": "ev_jan",
+                        "statement_period_start": "1 Jan 2025",
+                        "statement_period_end": "31 Jan 2025",
+                        "opening_balance": "$100.00",
+                        "opening_balance_sign": "CR",
+                        "closing_balance": "$150.00",
+                        "closing_balance_sign": "CR",
+                    },
+                    {
+                        "document_id": "doc_feb",
+                        "file_path": "inputs/feb.pdf",
+                        "page": "1",
+                        "evidence_id": "ev_feb",
+                        "statement_period_start": "1 Feb 2025",
+                        "statement_period_end": "28 Feb 2025",
+                        "opening_balance": "$155.00",
+                        "opening_balance_sign": "CR",
+                        "closing_balance": "$200.00",
+                        "closing_balance_sign": "CR",
+                    },
+                ],
+                "findings": [],
+                "summary": {"bank_documents": 2, "facts_extracted": 2, "findings": 0},
+            }
+        )
+    )
+    output = tmp_path / "bank_continuity.md"
+
+    result = run_cli("export-bank-continuity", "--facts", str(facts_path), "--output", str(output))
+
+    assert result.returncode == 1
+    text = output.read_text()
+    assert "# Bank Continuity Check" in text
+    payload = json.loads((tmp_path / "bank_continuity.json").read_text())
+    assert payload["summary"] == {"comparisons": 1, "findings": 1}
+    finding = payload["findings"][0]
+    assert finding["category"] == "bank_continuity_break"
+    assert finding["prior_evidence_id"] == "ev_jan"
+    assert finding["current_evidence_id"] == "ev_feb"
+    assert finding["prior_closing_balance"] == "$150.00 CR"
+    assert finding["current_opening_balance"] == "$155.00 CR"
+
+
+def test_export_bank_continuity_passes_matching_sequence(tmp_path: Path):
+    facts_path = tmp_path / "bank_statement_facts.json"
+    facts_path.write_text(
+        json.dumps(
+            {
+                "engagement_id": "bank_continuity_clean_test",
+                "entity_name": "Bank Trust",
+                "fact_type": "bank_statement_facts",
+                "facts": [
+                    {
+                        "document_id": "doc_jan",
+                        "file_path": "inputs/jan.pdf",
+                        "page": "1",
+                        "evidence_id": "ev_jan",
+                        "statement_period_start": "1 Jan 2025",
+                        "statement_period_end": "31 Jan 2025",
+                        "opening_balance": "$100.00",
+                        "opening_balance_sign": "CR",
+                        "closing_balance": "$150.00",
+                        "closing_balance_sign": "CR",
+                    },
+                    {
+                        "document_id": "doc_feb",
+                        "file_path": "inputs/feb.pdf",
+                        "page": "1",
+                        "evidence_id": "ev_feb",
+                        "statement_period_start": "1 Feb 2025",
+                        "statement_period_end": "28 Feb 2025",
+                        "opening_balance": "$150.00",
+                        "opening_balance_sign": "CR",
+                        "closing_balance": "$200.00",
+                        "closing_balance_sign": "CR",
+                    },
+                ],
+                "findings": [],
+                "summary": {"bank_documents": 2, "facts_extracted": 2, "findings": 0},
+            }
+        )
+    )
+    output = tmp_path / "bank_continuity.md"
+
+    result = run_cli("export-bank-continuity", "--facts", str(facts_path), "--output", str(output))
+
+    assert result.returncode == 0
+    payload = json.loads((tmp_path / "bank_continuity.json").read_text())
+    assert payload["summary"] == {"comparisons": 1, "findings": 0}
+    assert payload["comparisons"][0]["status"] == "matched"
