@@ -18,6 +18,7 @@ class EvidenceRef(JsonModelMixin):
     amount: str | None = None
     date: str | None = None
     confidence: str | None = None
+    document_id: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EvidenceRef":
@@ -31,4 +32,5 @@ class EvidenceRef(JsonModelMixin):
             amount=data.get("amount"),
             date=data.get("date"),
             confidence=data.get("confidence"),
+            document_id=data.get("document_id"),
         )

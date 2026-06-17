@@ -55,11 +55,16 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-audit-trail \
   --output outputs/audit_trail.md
 ```
 
-Validate state and record structured evidence:
+Validate state, run orchestration, and record structured evidence:
 
 ```bash
 PYTHONPATH=src python3.11 -m accountant_copilot.cli validate-state \
   --state outputs/engagement_state.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli run-engagement \
+  --state outputs/engagement_state.json \
+  --review-packet-dir outputs/review_packet \
+  --release-manifest outputs/release_manifest.json
 
 PYTHONPATH=src python3.11 -m accountant_copilot.cli record-document \
   --state outputs/engagement_state.json \
@@ -76,6 +81,7 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli record-evidence \
   --source-type bank_statement \
   --file-path bank.csv \
   --row 7 \
+  --document-id doc_bank_001 \
   --quote "Source quote text"
 ```
 
@@ -211,6 +217,17 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli record-output \
   --file-path outputs/fs.xlsx \
   --artifact-type financial_statements \
   --verifier-status passed
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli import-verifier-result \
+  --state outputs/engagement_state.json \
+  --verifier-result outputs/verifier_result.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli recommend-templates \
+  --state outputs/engagement_state.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-review-ui \
+  --state outputs/engagement_state.json \
+  --output outputs/review_packet/index.html
 
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-release-manifest \
   --state outputs/engagement_state.json \

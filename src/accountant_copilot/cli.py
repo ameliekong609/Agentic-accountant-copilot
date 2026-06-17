@@ -11,11 +11,11 @@ from typing import Sequence
 
 from accountant_copilot.adapters.source_pipeline import import_source_pipeline_controls
 from accountant_copilot.orchestrator.planner import build_readiness_report, plan_next_tasks
-from accountant_copilot.state.artifacts import AdjustmentProposal, ChartAccount, OutputArtifact, SourceDocument
+from accountant_copilot.state.artifacts import AdjustmentProposal, ChartAccount, OutputArtifact, SourceDocument, StateTransition
 from accountant_copilot.state.decisions import AccountantDecision, DecisionStatus
 from accountant_copilot.state.evidence import EvidenceRef
 from accountant_copilot.state.engagement import EngagementState
-from accountant_copilot.state.exceptions import ExceptionItem, ExceptionStatus
+from accountant_copilot.state.exceptions import ExceptionItem, ExceptionSeverity, ExceptionStatus
 from accountant_copilot.state.preferences import PreferenceRule, PreferenceScope, PreferenceStatus
 
 
@@ -83,6 +83,31 @@ def save_engagement_state(path: Path, state: EngagementState) -> None:
     """Persist engagement state JSON, creating the output directory if required."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(state.model_dump_json())
+
+
+def state_hash(state: EngagementState) -> str:
+    return hashlib.sha256(state.model_dump_json().encode()).hexdigest()
+
+
+def _record_state_transition(
+    state: EngagementState,
+    *,
+    command: str,
+    before_hash: str,
+    actor: str = "system",
+    summary: str = "State updated.",
+) -> None:
+    transition = StateTransition(
+        transition_id=f"transition_{len(state.state_transitions) + 1:04d}",
+        command=command,
+        before_hash=before_hash,
+        after_hash="pending",
+        actor=actor,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        summary=summary,
+    )
+    state.state_transitions.append(transition)
+    transition.after_hash = state_hash(state)
 
 
 def _final_signoff_decision(state: EngagementState) -> AccountantDecision | None:
@@ -551,6 +576,7 @@ def _record_evidence_command(args: argparse.Namespace) -> int:
         amount=args.amount,
         date=args.date,
         confidence=args.confidence,
+        document_id=args.document_id,
     )
     state.evidence.append(evidence)
     save_engagement_state(state_path, state)
@@ -855,7 +881,8 @@ def _format_evidence_summary(state: EngagementState) -> str:
     if not state.evidence:
         lines.append("No structured evidence recorded.")
     for evidence in sorted(state.evidence, key=lambda item: item.evidence_id):
-        lines.append(f"- {evidence.evidence_id}: {evidence.source_type} {evidence.file_path} {evidence.quote or ''}".rstrip())
+        doc = f" document={evidence.document_id}" if evidence.document_id else ""
+        lines.append(f"- {evidence.evidence_id}:{doc} {evidence.source_type} {evidence.file_path} {evidence.quote or ''}".rstrip())
     return "\n".join(lines) + "\n"
 
 
@@ -934,6 +961,160 @@ def _export_release_manifest_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _import_verifier_result_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    before = state_hash(state)
+    payload = json.loads(Path(args.verifier_result).read_text())
+    status = payload.get("status") or payload.get("verifier_status") or "not_run"
+    artifact = OutputArtifact(
+        output_id=payload.get("output_id", "out_verifier"),
+        file_path=payload.get("file_path", "unknown output"),
+        artifact_type=payload.get("artifact_type", "financial_statements"),
+        verifier_status=status,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        source_state_hash=before,
+    )
+    state.output_artifacts = [item for item in state.output_artifacts if item.output_id != artifact.output_id]
+    state.output_artifacts.append(artifact)
+    if status != "passed":
+        for idx, finding in enumerate(payload.get("findings", []) or [{"check": "verifier", "detail": "Verifier failed."}], start=1):
+            check = finding.get("check", "verifier")
+            state.exceptions.append(
+                ExceptionItem(
+                    exception_id=f"output_verifier_{artifact.output_id}_{idx:04d}",
+                    source="output_verifier",
+                    severity=ExceptionSeverity.CRITICAL,
+                    category=f"output_{check}",
+                    description=str(finding.get("detail", "Output verifier failed.")),
+                    evidence_refs=[artifact.output_id],
+                    recommended_action="Resolve failed output verifier finding before release.",
+                    requires_human_approval=True,
+                )
+            )
+    _record_state_transition(state, command="import-verifier-result", before_hash=before, summary=f"Imported verifier result {status}.")
+    save_engagement_state(state_path, state)
+    print(f"Imported verifier result for {artifact.output_id}: {status}")
+    return 0 if status == "passed" else 1
+
+
+_TEMPLATE_RULES = {
+    "discretionary_trust": [
+        "Review beneficiary distributions before final sign-off.",
+        "Confirm trustee/accounting presentation for beneficiary distributions.",
+        "Check retained earnings or settled sum presentation against firm preference.",
+    ],
+    "company": ["Review retained earnings and tax provision presentation."],
+    "individual": ["Review proprietor drawings and tax-related classifications."],
+    "partnership": ["Review partner capital and distribution allocations."],
+}
+
+
+def _recommend_templates_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    entity_type = state.entity_type or "unknown"
+    rules = _TEMPLATE_RULES.get(entity_type, [])
+    print(f"Entity template recommendations: {entity_type}")
+    if not rules:
+        print("No entity template rules recorded for this entity type.")
+    for rule in rules:
+        print(f"- {rule}")
+    return 0
+
+
+def _html_escape(value: str | None) -> str:
+    return (value or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _export_review_ui_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    payload = inspect_engagement(state)
+    exception_items = "\n".join(
+        f"<li><strong>{_html_escape(item.exception_id)}</strong> [{item.severity.value}] {_html_escape(item.description)}</li>"
+        for item in state.open_exceptions()
+    ) or "<li>No open exceptions.</li>"
+    evidence_items = "\n".join(
+        f"<li>{_html_escape(ev.evidence_id)} — document={_html_escape(ev.document_id)} quote={_html_escape(ev.quote)}</li>"
+        for ev in state.evidence
+    ) or "<li>No structured evidence recorded.</li>"
+    html = f"""<!doctype html>
+<html>
+<head><meta charset=\"utf-8\"><title>Accountant Review — {_html_escape(state.entity_name)}</title></head>
+<body>
+<h1>Accountant Review — {_html_escape(state.entity_name)}</h1>
+<p>Readiness: {_html_escape(payload['readiness_summary'])}</p>
+<h2>Open exceptions</h2><ul>{exception_items}</ul>
+<h2>Evidence</h2><ul>{evidence_items}</ul>
+<h2>CoA accounts</h2><ul>{''.join(f'<li>{_html_escape(a.account_id)} [{_html_escape(a.status)}] {_html_escape(a.name)}</li>' for a in state.chart_accounts) or '<li>No CoA accounts recorded.</li>'}</ul>
+<h2>Adjustments</h2><ul>{''.join(f'<li>{_html_escape(a.adjustment_id)} [{_html_escape(a.status)}] {_html_escape(a.description)}</li>' for a in state.adjustment_proposals) or '<li>No adjustments recorded.</li>'}</ul>
+</body>
+</html>
+"""
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(html)
+    print(f"Exported review UI → {output}")
+    return 0 if payload["final_output_allowed"] else 1
+
+
+def _export_release_manifest_file(state_path: Path, output: Path, workpaper_pack: str | None = None, audit_trail: str | None = None) -> int:
+    state = load_engagement_state(state_path)
+    signoff = _final_signoff_decision(state)
+    if signoff is None:
+        print("Cannot export release manifest before final sign-off", file=sys.stderr)
+        return 1
+    failed_outputs = [artifact for artifact in state.output_artifacts if artifact.verifier_status != "passed"]
+    if failed_outputs:
+        print("Cannot export release manifest: verifier status is not passing", file=sys.stderr)
+        return 1
+    state.lifecycle_status = "released"
+    final_hash = state_hash(state)
+    save_engagement_state(state_path, state)
+    payload = inspect_engagement(state)
+    manifest = {
+        "engagement_id": state.engagement_id,
+        "entity_name": state.entity_name,
+        "lifecycle_status": state.lifecycle_status,
+        "final_output_allowed": payload["final_output_allowed"],
+        "signoff_decision_id": signoff.decision_id,
+        "final_state_hash": final_hash,
+        "output_artifact_ids": [artifact.output_id for artifact in state.output_artifacts],
+        "workpaper_pack": workpaper_pack,
+        "audit_trail": audit_trail,
+        "created_outputs": [ref for ref in [state.statements_ref, workpaper_pack, audit_trail] if ref],
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    print(f"Exported release manifest → {output}")
+    return 0
+
+
+def _run_engagement_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    before = state_hash(state)
+    payload = inspect_engagement(state)
+    if not payload["final_output_allowed"]:
+        packet_dir = Path(args.review_packet_dir)
+        output_dir = packet_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "README.md").write_text(f"# Accountant Review Packet — {state.entity_name}\n\nEngagement blocked.\n")
+        (output_dir / "open_exceptions.md").write_text(format_exception_review(state))
+        (output_dir / "document_summary.md").write_text(format_documents(state))
+        (output_dir / "evidence_summary.md").write_text(_format_evidence_summary(state))
+        (output_dir / "preference_recommendations.md").write_text("Recommended preferences\n")
+        (output_dir / "review_decisions_template.json").write_text(json.dumps({"engagement_id": state.engagement_id, "decisions": []}, indent=2))
+        _record_state_transition(state, command="run-engagement", before_hash=before, summary="Engagement blocked; review packet exported.")
+        save_engagement_state(state_path, state)
+        print(f"Engagement blocked; review packet exported → {packet_dir}")
+        return 1
+    _record_state_transition(state, command="run-engagement", before_hash=before, summary="Engagement ready for release manifest.")
+    save_engagement_state(state_path, state)
+    result = _export_release_manifest_file(state_path, Path(args.release_manifest))
+    print("Engagement ready")
+    return result
+
+
 def _import_source_exceptions_command(args: argparse.Namespace) -> int:
     imported = import_source_pipeline_controls(
         matching_path=Path(args.matching),
@@ -987,6 +1168,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     inspect_parser.set_defaults(func=_inspect_engagement_command)
 
+    run_parser = subparsers.add_parser(
+        "run-engagement",
+        help="Run deterministic engagement orchestration and stop at review gates.",
+    )
+    run_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    run_parser.add_argument("--review-packet-dir", default="outputs/review_packet")
+    run_parser.add_argument("--release-manifest", default="outputs/release_manifest.json")
+    run_parser.set_defaults(func=_run_engagement_command)
+
     validate_parser = subparsers.add_parser(
         "validate-state",
         help="Validate engagement state JSON before running state-changing commands.",
@@ -1008,6 +1198,7 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_parser.add_argument("--amount", default=None)
     evidence_parser.add_argument("--date", default=None)
     evidence_parser.add_argument("--confidence", default=None)
+    evidence_parser.add_argument("--document-id", default=None)
     evidence_parser.set_defaults(func=_record_evidence_command)
 
     document_parser = subparsers.add_parser(
@@ -1225,6 +1416,29 @@ def build_parser() -> argparse.ArgumentParser:
     output_parser.add_argument("--artifact-type", required=True)
     output_parser.add_argument("--verifier-status", required=True, choices=["passed", "failed", "not_run"])
     output_parser.set_defaults(func=_record_output_command)
+
+    verifier_parser = subparsers.add_parser(
+        "import-verifier-result",
+        help="Import verifier JSON into output artifacts and blocking exceptions.",
+    )
+    verifier_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    verifier_parser.add_argument("--verifier-result", required=True)
+    verifier_parser.set_defaults(func=_import_verifier_result_command)
+
+    template_recommend_parser = subparsers.add_parser(
+        "recommend-templates",
+        help="Recommend entity-type accounting template rules.",
+    )
+    template_recommend_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    template_recommend_parser.set_defaults(func=_recommend_templates_command)
+
+    review_ui_parser = subparsers.add_parser(
+        "export-review-ui",
+        help="Export a static HTML accountant review page.",
+    )
+    review_ui_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    review_ui_parser.add_argument("--output", required=True)
+    review_ui_parser.set_defaults(func=_export_review_ui_command)
 
     manifest_parser = subparsers.add_parser(
         "export-release-manifest",

@@ -109,3 +109,26 @@ class OutputArtifact(JsonModelMixin):
             source_state_hash=data.get("source_state_hash"),
             release_manifest_id=data.get("release_manifest_id"),
         )
+
+
+@dataclass
+class StateTransition(JsonModelMixin):
+    transition_id: str
+    command: str
+    before_hash: str
+    after_hash: str
+    actor: str
+    timestamp: str
+    summary: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StateTransition":
+        return cls(
+            transition_id=data["transition_id"],
+            command=data["command"],
+            before_hash=data["before_hash"],
+            after_hash=data["after_hash"],
+            actor=data.get("actor", "system"),
+            timestamp=data["timestamp"],
+            summary=data["summary"],
+        )

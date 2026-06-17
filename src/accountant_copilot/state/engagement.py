@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ._json import JsonModelMixin
-from .artifacts import AdjustmentProposal, ChartAccount, OutputArtifact, SourceDocument
+from .artifacts import AdjustmentProposal, ChartAccount, OutputArtifact, SourceDocument, StateTransition
 from .decisions import AccountantDecision, DecisionStatus
 from .evidence import EvidenceRef
 from .exceptions import ExceptionItem, ExceptionStatus
@@ -39,6 +39,7 @@ class EngagementState(JsonModelMixin):
     chart_accounts: list[ChartAccount] = field(default_factory=list)
     adjustment_proposals: list[AdjustmentProposal] = field(default_factory=list)
     output_artifacts: list[OutputArtifact] = field(default_factory=list)
+    state_transitions: list[StateTransition] = field(default_factory=list)
     agent_tasks: list[dict[str, Any]] = field(default_factory=list)
     coa_review_required: bool = False
     coa_review_status: str = "not_required"
@@ -68,6 +69,7 @@ class EngagementState(JsonModelMixin):
             chart_accounts=[ChartAccount.from_dict(x) for x in data.get("chart_accounts", [])],
             adjustment_proposals=[AdjustmentProposal.from_dict(x) for x in data.get("adjustment_proposals", [])],
             output_artifacts=[OutputArtifact.from_dict(x) for x in data.get("output_artifacts", [])],
+            state_transitions=[StateTransition.from_dict(x) for x in data.get("state_transitions", [])],
             agent_tasks=list(data.get("agent_tasks", [])),
             coa_review_required=bool(data.get("coa_review_required", False)),
             coa_review_status=data.get("coa_review_status", "not_required"),

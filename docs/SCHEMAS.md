@@ -29,6 +29,7 @@ Common optional fields:
 - `chart_accounts`
 - `adjustment_proposals`
 - `output_artifacts`
+- `state_transitions`
 - `coa_review_required`
 - `coa_review_status`
 - `adjustment_review_status`
@@ -148,3 +149,21 @@ Source document records use:
   "release_manifest_id": null
 }
 ```
+
+## State transitions
+
+State-changing orchestration can record transition hashes:
+
+```json
+{
+  "transition_id": "transition_0001",
+  "command": "run-engagement",
+  "before_hash": "sha256...",
+  "after_hash": "sha256...",
+  "actor": "system",
+  "timestamp": "2026-06-17T00:00:00+00:00",
+  "summary": "Engagement blocked; review packet exported."
+}
+```
+
+Evidence records may include `document_id` when linked to a source document register entry.
