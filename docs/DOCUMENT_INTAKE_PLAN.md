@@ -44,7 +44,22 @@
    - captures payment date, record date, cash/net distribution, interest/dividend/capital-gain-style components, tax offsets, and withholding when labels are parseable
    - reports distribution/tax candidate documents where numeric component lines are not parseable instead of guessing
 
-8. `export-bank-continuity`
+8. `export-distribution-tax-review`
+   - turns extracted distribution/tax facts into accountant review findings
+   - asks for income mapping, tax component treatment, and bank receipt matching review
+   - explicitly sets `approved=false`; no distribution/tax accounting treatment is auto-approved
+
+9. `export-broker-trade-facts`
+   - extracts evidence-linked broker confirmation facts when parseable
+   - captures buy/sell side, transaction/settlement dates, settlement amount, consideration, quantity, price, fees, GST, company/security, and transaction identifiers where labels are available
+   - reports incomplete broker confirmation extraction instead of guessing
+
+10. `export-broker-trade-review`
+   - turns extracted broker trade facts into accountant review findings
+   - asks for disposal/acquisition classification, gain/loss treatment, and bank settlement matching review
+   - explicitly sets `approved=false`; no realised gain/loss or investment treatment is auto-approved
+
+11. `export-bank-continuity`
    - compares sequential bank statement closing balances to next opening balances
    - groups statements by inferred account key before comparing
    - accepts same-day or next-day period bridges, because different banks label statement boundaries differently

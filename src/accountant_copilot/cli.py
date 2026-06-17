@@ -24,6 +24,8 @@ from accountant_copilot.state.preferences import PreferenceRule, PreferenceScope
 
 
 DEFAULT_STATE_PATH = Path("outputs/engagement_state.json")
+DEFAULT_TURING_ENTITY_NAME = "XYZ Financial Pty Ltd ATF XYZ Australia Financial Trust"
+DEFAULT_TURING_ENGAGEMENT_ID = "turing_financial_statements_fy2025"
 _OUT_OF_SCOPE_VERSION = "".join(("v", "2"))
 _OUT_OF_SCOPE_VERSION_UPPER = _OUT_OF_SCOPE_VERSION.upper()
 
@@ -1411,6 +1413,291 @@ def _export_distribution_tax_facts_command(args: argparse.Namespace) -> int:
     return 0 if not payload["findings"] else 1
 
 
+def _distribution_review_actions(fact: dict) -> list[dict]:
+    actions: list[dict] = []
+    components = fact.get("components", {}) or {}
+    income_components = {
+        "cash_distribution",
+        "net_cash_distribution",
+        "interest",
+        "franked_dividends",
+        "unfranked_dividends",
+        "foreign_income",
+        "capital_gains",
+    }
+    tax_components = {"foreign_income_tax_offset", "franking_credit_tax_offset", "tfn_withholding", "non_resident_withholding"}
+    if any(component in components for component in income_components):
+        actions.append(
+            {
+                "category": "distribution_income_mapping_review_required",
+                "candidate_treatment": "distribution_income_component_mapping",
+                "recommended_action": "Accountant to map distribution income components to CoA/tax labels and confirm taxable/non-taxable presentation.",
+            }
+        )
+    if any(component in components for component in tax_components):
+        actions.append(
+            {
+                "category": "distribution_tax_component_review_required",
+                "candidate_treatment": "tax_offset_or_withholding_review",
+                "recommended_action": "Accountant to confirm tax offset, franking credit, and withholding treatment before statement or tax workpaper reliance.",
+            }
+        )
+    if fact.get("payment_date") or components.get("net_cash_distribution") or components.get("cash_distribution"):
+        actions.append(
+            {
+                "category": "distribution_bank_match_review_required",
+                "candidate_treatment": "match_distribution_to_bank_receipt",
+                "recommended_action": "Accountant to match the distribution/payment advice amount to bank receipt evidence or record why no bank match is expected.",
+            }
+        )
+    if not actions:
+        actions.append(
+            {
+                "category": "distribution_accounting_treatment_review_required",
+                "candidate_treatment": "distribution_statement_review_required",
+                "recommended_action": "Accountant to review distribution/tax source evidence and decide accounting treatment.",
+            }
+        )
+    return actions
+
+
+def _build_distribution_tax_review_payload(facts_payload: dict) -> dict:
+    review_findings: list[dict] = []
+    for fact in facts_payload.get("facts", []):
+        for action in _distribution_review_actions(fact):
+            review_findings.append(
+                {
+                    **action,
+                    "document_id": fact.get("document_id"),
+                    "file_path": fact.get("file_path"),
+                    "page": fact.get("page"),
+                    "evidence_id": fact.get("evidence_id"),
+                    "payment_date": fact.get("payment_date"),
+                    "record_date": fact.get("record_date"),
+                    "components": fact.get("components", {}),
+                    "approved": False,
+                }
+            )
+    for finding in facts_payload.get("findings", []):
+        review_findings.append(
+            {
+                "category": "distribution_source_extraction_review_required",
+                "candidate_treatment": "source_fact_extraction_incomplete",
+                "recommended_action": finding.get("recommended_action") or "Accountant to review source evidence before relying on distribution/tax facts.",
+                "document_id": finding.get("document_id"),
+                "file_path": finding.get("file_path"),
+                "page": finding.get("page"),
+                "evidence_id": finding.get("evidence_id"),
+                "components": {},
+                "approved": False,
+            }
+        )
+    return {
+        "engagement_id": facts_payload.get("engagement_id"),
+        "entity_name": facts_payload.get("entity_name"),
+        "review_type": "distribution_tax_accounting_review",
+        "review_findings": review_findings,
+        "summary": {
+            "facts_reviewed": len(facts_payload.get("facts", [])),
+            "source_findings_reviewed": len(facts_payload.get("findings", [])),
+            "review_findings": len(review_findings),
+            "approved": 0,
+        },
+    }
+
+
+def _format_distribution_tax_review(payload: dict) -> str:
+    lines = [f"# Distribution and Tax Accounting Review — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend([
+        f"- Facts reviewed: {summary['facts_reviewed']}",
+        f"- Source findings reviewed: {summary['source_findings_reviewed']}",
+        f"- Review findings: {summary['review_findings']}",
+        f"- Approved automatically: {summary['approved']}",
+        "",
+    ])
+    if payload["review_findings"]:
+        lines.append("## Review findings")
+        for finding in payload["review_findings"]:
+            lines.extend([
+                f"- {finding['category']}: `{finding.get('file_path')}`",
+                f"  - Candidate treatment: {finding.get('candidate_treatment')}",
+                f"  - Approved: {finding.get('approved')}",
+                f"  - Evidence: `{finding.get('evidence_id')}` page {finding.get('page')}",
+                f"  - Payment date: {finding.get('payment_date') or 'not extracted'}",
+                f"  - Components: {json.dumps(finding.get('components', {}), sort_keys=True)}",
+                f"  - Action: {finding.get('recommended_action')}",
+            ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_distribution_tax_review_command(args: argparse.Namespace) -> int:
+    facts_payload = json.loads(Path(args.facts).read_text())
+    payload = _build_distribution_tax_review_payload(facts_payload)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_distribution_tax_review(payload))
+    json_output = output.with_suffix(".json")
+    json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported distribution/tax accounting review → {output}")
+    print(f"Exported distribution/tax accounting review JSON → {json_output}")
+    return 0 if not payload["review_findings"] else 1
+
+
+_BROKER_FIELD_LABELS = {
+    "transaction_date": ["Transaction Date"],
+    "settlement_date": ["Settlement Date"],
+    "settlement_amount": ["Settlement Amount", "Total Amount Payable"],
+    "consideration": ["Consideration"],
+    "quantity": ["Quantity"],
+    "price": ["Price"],
+    "brokerage": ["Brokerage"],
+    "fees": ["Misc Fees & Charges"],
+    "gst": ["Total GST Payable"],
+    "company": ["Company"],
+    "security": ["Security"],
+    "market": ["Market"],
+    "isin": ["ISIN"],
+    "transaction_number": ["Transaction No"],
+}
+
+
+def _extract_label_value(quote: str, labels: list[str]) -> str | None:
+    for label in labels:
+        pattern = re.compile(rf"{re.escape(label)}\s*:?\s*(?P<value>[^:]+?)(?=\s+[A-Z][A-Za-z /&]+\s*:|$)", re.IGNORECASE)
+        match = pattern.search(quote)
+        if match:
+            value = " ".join(match.group("value").split()).strip(" -")
+            return value or None
+    return None
+
+
+def _is_broker_confirmation_evidence(evidence: EvidenceRef, document: SourceDocument | None = None) -> bool:
+    document_type = (document.document_type if document else evidence.source_type) or ""
+    quote = evidence.quote or ""
+    return document_type == "broker_confirmation" or bool(re.search(r"SELL CONFIRMATION|BUY CONFIRMATION|Settlement Amount|Transaction Date", quote, re.IGNORECASE))
+
+
+def _extract_broker_trade_fact(document: SourceDocument, evidence: EvidenceRef) -> dict | None:
+    quote = " ".join((evidence.quote or "").split())
+    if not _is_broker_confirmation_evidence(evidence, document):
+        return None
+    fields = {field: value for field, labels in _BROKER_FIELD_LABELS.items() if (value := _extract_label_value(quote, labels))}
+    side = "sell" if re.search(r"SELL CONFIRMATION", quote, re.IGNORECASE) else "buy" if re.search(r"BUY CONFIRMATION", quote, re.IGNORECASE) else None
+    has_trade_fact = side or any(field in fields for field in ("transaction_date", "settlement_date", "settlement_amount", "consideration", "quantity"))
+    if not has_trade_fact:
+        return None
+    return {
+        "document_id": document.document_id,
+        "file_path": document.file_path,
+        "page": evidence.page,
+        "evidence_id": evidence.evidence_id,
+        "side": side,
+        "fields": fields,
+        "confidence": evidence.confidence,
+        "snippet": quote[:300],
+    }
+
+
+def _build_broker_trade_facts_payload(state: EngagementState) -> dict:
+    documents = {doc.document_id: doc for doc in state.source_documents}
+    facts: list[dict] = []
+    findings: list[dict] = []
+    candidate_documents: set[str] = set()
+    extracted_documents: set[str] = set()
+    for evidence in state.evidence:
+        document = documents.get(evidence.document_id or "")
+        if not document or not _is_broker_confirmation_evidence(evidence, document):
+            continue
+        candidate_documents.add(document.document_id)
+        fact = _extract_broker_trade_fact(document, evidence)
+        if fact and len(fact.get("fields", {})) >= 2:
+            facts.append(fact)
+            extracted_documents.add(document.document_id)
+    for document_id in sorted(candidate_documents - extracted_documents):
+        document = documents[document_id]
+        findings.append({
+            "category": "broker_trade_fact_extraction_incomplete",
+            "document_id": document.document_id,
+            "file_path": document.file_path,
+            "recommended_action": "Review broker confirmation evidence and improve parser or record an accountant decision.",
+        })
+    return {
+        "engagement_id": state.engagement_id,
+        "entity_name": state.entity_name,
+        "fact_type": "broker_trade_facts",
+        "facts": facts,
+        "findings": findings,
+        "summary": {"broker_documents": len(candidate_documents), "facts_extracted": len(facts), "findings": len(findings)},
+    }
+
+
+def _format_broker_trade_facts(payload: dict) -> str:
+    lines = [f"# Broker Trade Facts — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend([f"- Broker documents: {summary['broker_documents']}", f"- Facts extracted: {summary['facts_extracted']}", f"- Findings: {summary['findings']}", ""])
+    if payload["facts"]:
+        lines.append("## Extracted broker trade facts")
+        for fact in payload["facts"]:
+            lines.extend([f"- `{fact['evidence_id']}` — `{fact['file_path']}` page {fact['page']}", f"  - Side: {fact['side'] or 'not extracted'}", f"  - Fields: {json.dumps(fact.get('fields', {}), sort_keys=True)}", f"  - Confidence: {fact['confidence']}"])
+    if payload["findings"]:
+        lines.extend(["", "## Findings needing review"])
+        for finding in payload["findings"]:
+            lines.extend([f"- {finding['category']}: `{finding['file_path']}`", f"  - Action: {finding['recommended_action']}"])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_broker_trade_facts_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    payload = _build_broker_trade_facts_payload(state)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_broker_trade_facts(payload))
+    json_output = output.with_suffix(".json")
+    json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported broker trade facts → {output}")
+    print(f"Exported broker trade facts JSON → {json_output}")
+    return 0 if not payload["findings"] else 1
+
+
+def _build_broker_trade_review_payload(facts_payload: dict) -> dict:
+    review_findings: list[dict] = []
+    for fact in facts_payload.get("facts", []):
+        for category, treatment, action in [
+            ("broker_disposal_classification_review_required", "investment_disposal_or_acquisition_review", "Accountant to confirm buy/sell treatment, investment account mapping, and proceeds/cost handling."),
+            ("broker_gain_loss_review_required", "realised_gain_loss_review", "Accountant to confirm cost base, realised gain/loss calculation, and tax/accounting presentation."),
+            ("broker_bank_settlement_match_review_required", "match_broker_settlement_to_bank", "Accountant to match settlement amount/date to bank transaction evidence or record why no bank match is expected."),
+        ]:
+            review_findings.append({**fact, "category": category, "candidate_treatment": treatment, "recommended_action": action, "approved": False})
+    for finding in facts_payload.get("findings", []):
+        review_findings.append({**finding, "category": "broker_source_extraction_review_required", "candidate_treatment": "source_fact_extraction_incomplete", "approved": False})
+    return {"engagement_id": facts_payload.get("engagement_id"), "entity_name": facts_payload.get("entity_name"), "review_type": "broker_trade_accounting_review", "review_findings": review_findings, "summary": {"facts_reviewed": len(facts_payload.get("facts", [])), "source_findings_reviewed": len(facts_payload.get("findings", [])), "review_findings": len(review_findings), "approved": 0}}
+
+
+def _format_broker_trade_review(payload: dict) -> str:
+    lines = [f"# Broker Trade Accounting Review — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend([f"- Facts reviewed: {summary['facts_reviewed']}", f"- Source findings reviewed: {summary['source_findings_reviewed']}", f"- Review findings: {summary['review_findings']}", f"- Approved automatically: {summary['approved']}", ""])
+    if payload["review_findings"]:
+        lines.append("## Review findings")
+        for finding in payload["review_findings"]:
+            lines.extend([f"- {finding['category']}: `{finding.get('file_path')}`", f"  - Candidate treatment: {finding.get('candidate_treatment')}", f"  - Approved: {finding.get('approved')}", f"  - Evidence: `{finding.get('evidence_id')}` page {finding.get('page')}", f"  - Action: {finding.get('recommended_action')}"])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_broker_trade_review_command(args: argparse.Namespace) -> int:
+    facts_payload = json.loads(Path(args.facts).read_text())
+    payload = _build_broker_trade_review_payload(facts_payload)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_broker_trade_review(payload))
+    json_output = output.with_suffix(".json")
+    json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported broker trade accounting review → {output}")
+    print(f"Exported broker trade accounting review JSON → {json_output}")
+    return 0 if not payload["review_findings"] else 1
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -2527,6 +2814,140 @@ def _export_local_ui_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_json_if_exists(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
+def _setup_turing_workspace_summary(
+    *,
+    state: EngagementState,
+    output_dir: Path,
+    command_results: list[tuple[str, int]],
+    readiness: dict,
+) -> str:
+    inventory = _read_json_if_exists(output_dir / "document_inventory.json")
+    bank_facts = _read_json_if_exists(output_dir / "bank_statement_facts.json")
+    bank_transactions = _read_json_if_exists(output_dir / "bank_transactions.json")
+    bank_continuity = _read_json_if_exists(output_dir / "bank_continuity.json")
+    invoice_facts = _read_json_if_exists(output_dir / "invoice_facts.json")
+    invoice_review = _read_json_if_exists(output_dir / "invoice_review.json")
+    distribution_tax = _read_json_if_exists(output_dir / "distribution_tax_facts.json")
+    open_exceptions = state.open_exceptions()
+    step_findings = [command for command, code in command_results if code != 0]
+    lines = [
+        f"# Turing Financial Statement Automation Setup — {state.entity_name}",
+        "",
+        f"Generated (UTC): {datetime.now(timezone.utc).date().isoformat()}",
+        "",
+        "## Inputs",
+        f"- Input folder: `{state.documents_ref}`",
+        f"- State: `{output_dir / 'engagement_state.json'}`",
+        "",
+        "## Command Results",
+    ]
+    for command, code in command_results:
+        lines.append(f"- {command}: exit {code}")
+    lines.extend(
+        [
+            "",
+            "## Summary",
+            f"- Source documents registered: {len(state.source_documents)}",
+            f"- Evidence refs extracted: {len(state.evidence)}",
+            f"- Open exceptions: {len(open_exceptions)}",
+            f"- Blocking exceptions: {readiness.get('blocking_exception_count', 0)}",
+            f"- Setup review steps with findings: {len(step_findings)}",
+            f"- Final output allowed: {'YES' if readiness.get('final_output_allowed') else 'NO'}",
+            f"- Readiness: {readiness.get('readiness_summary')}",
+            "",
+            "## Extracted Artifact Counts",
+            f"- Document inventory documents: {len(inventory.get('documents', []))}",
+            f"- Bank facts extracted: {bank_facts.get('summary', {}).get('facts_extracted', 0)}",
+            f"- Bank fact findings: {bank_facts.get('summary', {}).get('findings', 0)}",
+            f"- Bank transactions extracted: {bank_transactions.get('summary', {}).get('transactions_extracted', 0)}",
+            f"- Bank transaction findings: {bank_transactions.get('summary', {}).get('findings', 0)}",
+            f"- Bank continuity findings: {bank_continuity.get('summary', {}).get('findings', 0)}",
+            f"- Invoice facts extracted: {invoice_facts.get('summary', {}).get('facts_extracted', 0)}",
+            f"- Invoice review findings: {invoice_review.get('summary', {}).get('review_findings', 0)}",
+            f"- Distribution/tax facts extracted: {distribution_tax.get('summary', {}).get('facts_extracted', 0)}",
+            f"- Distribution/tax findings: {distribution_tax.get('summary', {}).get('findings', 0)}",
+            "",
+            "## Outputs",
+            f"- Review packet: `{output_dir / 'review_packet'}`",
+            f"- Review UI: `{output_dir / 'review.html'}`",
+            f"- Local UI wrapper: `{output_dir / 'local_ui' / 'index.html'}`",
+            f"- Statement package: `{output_dir / 'statement_package'}`",
+            f"- Document inventory: `{output_dir / 'document_inventory.md'}`",
+            f"- Bank facts: `{output_dir / 'bank_statement_facts.md'}`",
+            f"- Bank continuity: `{output_dir / 'bank_continuity.md'}`",
+            f"- Bank transactions: `{output_dir / 'bank_transactions.md'}`",
+            f"- Invoice facts: `{output_dir / 'invoice_facts.md'}`",
+            f"- Invoice review: `{output_dir / 'invoice_review.md'}`",
+            f"- Distribution/tax facts: `{output_dir / 'distribution_tax_facts.md'}`",
+            "",
+            "## Control Note",
+            "This setup registers and extracts source-linked evidence for review. It does not approve accounting treatment, release statements, or override open exceptions.",
+        ]
+    )
+    if open_exceptions:
+        lines.extend(["", "## Open Exceptions"])
+        for item in open_exceptions:
+            lines.append(f"- `{item.exception_id}` [{item.severity.value}] {item.category}: {item.description}")
+    if step_findings:
+        lines.extend(["", "## Review Steps With Findings"])
+        for command in step_findings:
+            lines.append(f"- {command}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _setup_turing_workspace_command(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir)
+    state_path = Path(args.state) if args.state else output_dir / "engagement_state.json"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state = EngagementState(
+        engagement_id=args.engagement_id,
+        entity_name=args.entity_name,
+        entity_type=args.entity_type,
+        fy_start=args.fy_start,
+        fy_end=args.fy_end,
+        documents_ref=args.input_dir,
+        coa_ref=args.input_dir,
+    )
+    save_engagement_state(state_path, state)
+
+    command_results: list[tuple[str, int]] = []
+
+    def run_step(name: str, func, namespace: argparse.Namespace) -> int:
+        code = func(namespace)
+        command_results.append((name, code))
+        return code
+
+    run_step("ingest-raw-inputs", _ingest_raw_inputs_command, argparse.Namespace(state=str(state_path), input_dir=args.input_dir))
+    run_step("render-statement-package", _render_statement_package_command, argparse.Namespace(state=str(state_path), output_dir=str(output_dir / "statement_package")))
+    run_step("export-review-packet", _export_review_packet_command, argparse.Namespace(state=str(state_path), output_dir=str(output_dir / "review_packet")))
+    run_step("export-review-ui", _export_review_ui_command, argparse.Namespace(state=str(state_path), output=str(output_dir / "review.html")))
+    run_step("export-local-ui", _export_local_ui_command, argparse.Namespace(state=str(state_path), review_ui=str(output_dir / "review.html"), output=str(output_dir / "local_ui" / "index.html")))
+    run_step("export-document-inventory", _export_document_inventory_command, argparse.Namespace(state=str(state_path), output=str(output_dir / "document_inventory.md")))
+    run_step("export-bank-statement-facts", _export_bank_statement_facts_command, argparse.Namespace(state=str(state_path), output=str(output_dir / "bank_statement_facts.md")))
+    if (output_dir / "bank_statement_facts.json").exists():
+        run_step("export-bank-continuity", _export_bank_continuity_command, argparse.Namespace(facts=str(output_dir / "bank_statement_facts.json"), output=str(output_dir / "bank_continuity.md")))
+    run_step("export-bank-transactions", _export_bank_transactions_command, argparse.Namespace(state=str(state_path), output=str(output_dir / "bank_transactions.md")))
+    run_step("export-invoice-facts", _export_invoice_facts_command, argparse.Namespace(state=str(state_path), output=str(output_dir / "invoice_facts.md")))
+    if (output_dir / "invoice_facts.json").exists():
+        run_step("export-invoice-review", _export_invoice_review_command, argparse.Namespace(facts=str(output_dir / "invoice_facts.json"), output=str(output_dir / "invoice_review.md")))
+    run_step("export-distribution-tax-facts", _export_distribution_tax_facts_command, argparse.Namespace(state=str(state_path), output=str(output_dir / "distribution_tax_facts.md")))
+
+    state = load_engagement_state(state_path)
+    readiness = inspect_engagement(state)
+    summary = _setup_turing_workspace_summary(state=state, output_dir=output_dir, command_results=command_results, readiness=readiness)
+    summary_path = output_dir / "SETUP_RESULTS.md"
+    summary_path.write_text(summary)
+    print(f"Turing workspace setup summary → {summary_path}")
+    has_step_findings = any(code != 0 for _, code in command_results)
+    return 0 if readiness["final_output_allowed"] and not has_step_findings else 1
+
+
 def _run_demo_command(args: argparse.Namespace) -> int:
     base = Path(args.output_dir)
     blocked = base / "blocked"
@@ -2958,6 +3379,20 @@ def build_parser() -> argparse.ArgumentParser:
     local_ui_parser.add_argument("--output", required=True)
     local_ui_parser.set_defaults(func=_export_local_ui_command)
 
+    setup_turing_parser = subparsers.add_parser(
+        "setup-turing-workspace",
+        help="Rebuild the local Turing financial statement automation review workspace from raw inputs.",
+    )
+    setup_turing_parser.add_argument("--input-dir", default="inputs")
+    setup_turing_parser.add_argument("--output-dir", default="outputs/turing_financial_statement_setup")
+    setup_turing_parser.add_argument("--state", default=None)
+    setup_turing_parser.add_argument("--engagement-id", default=DEFAULT_TURING_ENGAGEMENT_ID)
+    setup_turing_parser.add_argument("--entity-name", default=DEFAULT_TURING_ENTITY_NAME)
+    setup_turing_parser.add_argument("--entity-type", default="discretionary_trust")
+    setup_turing_parser.add_argument("--fy-start", default="2024-07-01")
+    setup_turing_parser.add_argument("--fy-end", default="2025-06-30")
+    setup_turing_parser.set_defaults(func=_setup_turing_workspace_command)
+
     demo_parser = subparsers.add_parser(
         "run-demo",
         help="Create a safe sample engagement demo with blocked and clean paths.",
@@ -3019,6 +3454,30 @@ def build_parser() -> argparse.ArgumentParser:
     distribution_tax_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     distribution_tax_parser.add_argument("--output", default="outputs/distribution_tax_facts.md")
     distribution_tax_parser.set_defaults(func=_export_distribution_tax_facts_command)
+
+    distribution_tax_review_parser = subparsers.add_parser(
+        "export-distribution-tax-review",
+        help="Create accountant review findings from extracted distribution/tax facts without auto-approval.",
+    )
+    distribution_tax_review_parser.add_argument("--facts", default="outputs/distribution_tax_facts.json")
+    distribution_tax_review_parser.add_argument("--output", default="outputs/distribution_tax_review.md")
+    distribution_tax_review_parser.set_defaults(func=_export_distribution_tax_review_command)
+
+    broker_trade_facts_parser = subparsers.add_parser(
+        "export-broker-trade-facts",
+        help="Extract evidence-linked broker trade facts from confirmation evidence.",
+    )
+    broker_trade_facts_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    broker_trade_facts_parser.add_argument("--output", default="outputs/broker_trade_facts.md")
+    broker_trade_facts_parser.set_defaults(func=_export_broker_trade_facts_command)
+
+    broker_trade_review_parser = subparsers.add_parser(
+        "export-broker-trade-review",
+        help="Create accountant review findings from extracted broker trade facts without auto-approval.",
+    )
+    broker_trade_review_parser.add_argument("--facts", default="outputs/broker_trade_facts.json")
+    broker_trade_review_parser.add_argument("--output", default="outputs/broker_trade_review.md")
+    broker_trade_review_parser.set_defaults(func=_export_broker_trade_review_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",

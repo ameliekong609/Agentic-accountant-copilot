@@ -100,6 +100,16 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli record-evidence \
   --quote "Source quote text"
 ```
 
+Rebuild the local Turing financial statement automation review workspace from raw `inputs/`:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli setup-turing-workspace \
+  --input-dir inputs \
+  --output-dir outputs/turing_financial_statement_setup
+```
+
+This creates a fresh engagement state, review packet, review UI, statement package, document inventory, bank facts, bank continuity checks, bank transactions, invoice facts/review, distribution tax facts, and `SETUP_RESULTS.md`. It is a review setup workflow only; it does not approve accounting treatment or release final statements.
+
 Export a batch review template:
 
 ```bash
@@ -390,6 +400,18 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-invoice-review \
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-distribution-tax-facts \
   --state outputs/engagement_state.json \
   --output outputs/distribution_tax_facts.md
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-distribution-tax-review \
+  --facts outputs/distribution_tax_facts.json \
+  --output outputs/distribution_tax_review.md
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-broker-trade-facts \
+  --state outputs/engagement_state.json \
+  --output outputs/broker_trade_facts.md
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-broker-trade-review \
+  --facts outputs/broker_trade_facts.json \
+  --output outputs/broker_trade_review.md
 
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \
   --facts outputs/bank_statement_facts.json \

@@ -117,3 +117,54 @@ def test_export_distribution_tax_facts_reports_unparsed_candidate_document(tmp_p
     payload = json.loads((tmp_path / "distribution_tax_facts.json").read_text())
     assert payload["summary"] == {"distribution_tax_documents": 1, "facts_extracted": 0, "findings": 1}
     assert payload["findings"][0]["category"] == "distribution_tax_fact_extraction_incomplete"
+
+
+def test_export_distribution_tax_review_creates_unapproved_accountant_findings(tmp_path: Path):
+    facts = {
+        "engagement_id": "distribution_review_test",
+        "entity_name": "Distribution Trust",
+        "fact_type": "distribution_tax_facts",
+        "facts": [
+            {
+                "document_id": "doc_distribution",
+                "file_path": "inputs/WBCPM_Distribution_Advice_2024_09_23.pdf",
+                "page": "1",
+                "evidence_id": "raw_035_page_001",
+                "payment_date": "23 September 2024",
+                "record_date": "13 September 2024",
+                "components": {
+                    "net_cash_distribution": "1,333.32",
+                    "franking_credit_tax_offset": "98.76",
+                },
+                "confidence": "text_pdf",
+            }
+        ],
+        "findings": [
+            {
+                "category": "distribution_tax_fact_extraction_incomplete",
+                "document_id": "doc_unparsed",
+                "file_path": "inputs/AN3_Payment_Advice_2024_09_20.pdf",
+                "recommended_action": "Review source document.",
+            }
+        ],
+        "summary": {"distribution_tax_documents": 2, "facts_extracted": 1, "findings": 1},
+    }
+    facts_path = tmp_path / "distribution_tax_facts.json"
+    facts_path.write_text(json.dumps(facts))
+    output = tmp_path / "distribution_tax_review.md"
+
+    result = run_cli("export-distribution-tax-review", "--facts", str(facts_path), "--output", str(output))
+
+    assert result.returncode == 1
+    assert "# Distribution and Tax Accounting Review" in output.read_text()
+    payload = json.loads((tmp_path / "distribution_tax_review.json").read_text())
+    assert payload["summary"] == {"facts_reviewed": 1, "source_findings_reviewed": 1, "review_findings": 4, "approved": 0}
+    categories = {finding["category"] for finding in payload["review_findings"]}
+    assert categories == {
+        "distribution_income_mapping_review_required",
+        "distribution_tax_component_review_required",
+        "distribution_bank_match_review_required",
+        "distribution_source_extraction_review_required",
+    }
+    assert all(finding["approved"] is False for finding in payload["review_findings"])
+    assert payload["review_findings"][0]["evidence_id"] == "raw_035_page_001"

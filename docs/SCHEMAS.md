@@ -205,3 +205,9 @@ CSV source intake now validates required `date`, `description`, and `amount` col
 `run-engagement --input-dir inputs` calls raw input intake before rendering review outputs. Final output must remain blocked while extraction-required exceptions are open.
 
 `export-distribution-tax-facts` extracts evidence-linked distribution and tax statement facts from investment statement source evidence. It writes markdown plus sibling JSON, capturing payment/record dates and parseable distribution, dividend, capital-gain, tax-offset, and withholding components; unparseable candidate documents become findings instead of guessed facts.
+
+`export-distribution-tax-review` creates unapproved accountant review findings for extracted distribution/tax facts, covering income mapping, tax component treatment, and bank receipt matching.
+
+`export-broker-trade-facts` extracts evidence-linked broker confirmation facts when labels are parseable and writes incomplete-extraction findings instead of guessing.
+
+`export-broker-trade-review` creates unapproved accountant review findings for broker disposal/acquisition classification, gain/loss treatment, and bank settlement matching.
