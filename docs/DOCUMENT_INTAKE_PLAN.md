@@ -29,7 +29,12 @@
    - excludes statement opening/closing balance summary rows from transaction rows
    - reports documents where transaction rows are not extractable instead of guessing
 
-5. `export-bank-continuity`
+5. `export-invoice-facts`
+   - extracts evidence-linked invoice facts from OCR/PDF source evidence
+   - captures invoice number, invoice date, due date, supplier, description, service period, subtotal, GST, amount due, page, evidence ID, and confidence
+   - reports incomplete invoice-like source evidence instead of guessing missing fields
+
+6. `export-bank-continuity`
    - compares sequential bank statement closing balances to next opening balances
    - groups statements by inferred account key before comparing
    - accepts same-day or next-day period bridges, because different banks label statement boundaries differently

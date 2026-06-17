@@ -1022,6 +1022,151 @@ def _export_bank_transactions_command(args: argparse.Namespace) -> int:
     return 0 if not payload["findings"] else 1
 
 
+_INVOICE_NUMBER_RE = re.compile(r"\b(?P<invoice>INV-\d+)\b", re.IGNORECASE)
+_INVOICE_DATE_RE = re.compile(r"TAX\s+INVOICE\s+(?P<date>\d{1,2}\s+[A-Za-z]{3}\s+\d{4})", re.IGNORECASE)
+_DUE_DATE_RE = re.compile(r"Due\s+Date:?\s*(?P<date>\d{1,2}/\d{1,2}/\d{4})", re.IGNORECASE)
+_SUPPLIER_RE = re.compile(r"(?P<supplier>Emerald\s+Family\s+Enterprise\s+Group\s+Pty\s+Ltd)", re.IGNORECASE)
+_DESCRIPTION_RE = re.compile(r"(?P<description>Portfolio\s+Management\s+Services)\s+From\s+(?:\S+\s+){0,2}?(?P<start>\d{1,2}/\d{1,2}/\d{4})\s+to\s+(?P<end>\d{1,2}/\d{1,2}/\d{4})", re.IGNORECASE)
+_SUBTOTAL_RE = re.compile(r"Subtotal\s+(?P<amount>(?:[$€£]\s?)?\d[\d,]*(?:\.\d{2})?)", re.IGNORECASE)
+_GST_RE = re.compile(r"Total\s+GST(?:\s+\d+%)?\s+(?P<amount>(?:[$€£]\s?)?\d[\d,]*(?:\.\d{2})?)", re.IGNORECASE)
+_AMOUNT_DUE_RE = re.compile(r"Amount\s+Due\s+(?:AUD\s+)?(?P<amount>(?:[$€£]\s?)?\d[\d,]*(?:\.\d{2})?)", re.IGNORECASE)
+
+
+def _is_invoice_evidence(evidence: EvidenceRef) -> bool:
+    quote = evidence.quote or ""
+    return bool(re.search(r"tax\s+invoice|invoice\s+number|amount\s+due", quote, re.IGNORECASE))
+
+
+def _extract_invoice_fact(document: SourceDocument, evidence: EvidenceRef) -> dict | None:
+    quote = " ".join((evidence.quote or "").split())
+    if not _is_invoice_evidence(evidence):
+        return None
+    invoice_match = _INVOICE_NUMBER_RE.search(quote)
+    date_match = _INVOICE_DATE_RE.search(quote)
+    due_match = _DUE_DATE_RE.search(quote)
+    supplier_match = _SUPPLIER_RE.search(quote)
+    description_match = _DESCRIPTION_RE.search(quote)
+    subtotal_match = _SUBTOTAL_RE.search(quote)
+    gst_match = _GST_RE.search(quote)
+    amount_due_match = _AMOUNT_DUE_RE.search(quote)
+    if not (
+        invoice_match
+        and date_match
+        and due_match
+        and supplier_match
+        and description_match
+        and subtotal_match
+        and gst_match
+        and amount_due_match
+    ):
+        return None
+    return {
+        "document_id": document.document_id,
+        "file_path": document.file_path,
+        "page": evidence.page,
+        "evidence_id": evidence.evidence_id,
+        "invoice_number": invoice_match.group("invoice"),
+        "invoice_date": date_match.group("date"),
+        "due_date": due_match.group("date"),
+        "supplier": supplier_match.group("supplier"),
+        "description": description_match.group("description"),
+        "service_period_start": description_match.group("start"),
+        "service_period_end": description_match.group("end"),
+        "subtotal": _clean_money_amount(subtotal_match.group("amount")),
+        "gst": _clean_money_amount(gst_match.group("amount")),
+        "amount_due": _clean_money_amount(amount_due_match.group("amount")),
+        "confidence": evidence.confidence,
+        "snippet": quote[:300],
+    }
+
+
+def _build_invoice_facts_payload(state: EngagementState) -> dict:
+    documents = {doc.document_id: doc for doc in state.source_documents}
+    facts: list[dict] = []
+    findings: list[dict] = []
+    candidate_documents: set[str] = set()
+    extracted_documents: set[str] = set()
+    for evidence in state.evidence:
+        if evidence.document_id not in documents or not _is_invoice_evidence(evidence):
+            continue
+        candidate_documents.add(evidence.document_id)
+        fact = _extract_invoice_fact(documents[evidence.document_id], evidence)
+        if fact:
+            facts.append(fact)
+            extracted_documents.add(evidence.document_id)
+        else:
+            findings.append(
+                {
+                    "category": "invoice_fact_extraction_incomplete",
+                    "document_id": evidence.document_id,
+                    "evidence_id": evidence.evidence_id,
+                    "file_path": evidence.file_path,
+                    "recommended_action": "Review invoice OCR/text and improve parser or record an accountant decision.",
+                }
+            )
+    return {
+        "engagement_id": state.engagement_id,
+        "entity_name": state.entity_name,
+        "fact_type": "invoice_facts",
+        "facts": facts,
+        "findings": findings,
+        "summary": {
+            "invoice_documents": len(candidate_documents),
+            "facts_extracted": len(facts),
+            "findings": len(findings),
+        },
+    }
+
+
+def _format_invoice_facts(payload: dict) -> str:
+    lines = [f"# Invoice Facts — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend([
+        f"- Invoice documents: {summary['invoice_documents']}",
+        f"- Facts extracted: {summary['facts_extracted']}",
+        f"- Findings: {summary['findings']}",
+        "",
+    ])
+    if payload["facts"]:
+        lines.append("## Extracted invoice facts")
+        for fact in payload["facts"]:
+            lines.extend([
+                f"- `{fact['invoice_number']}` — {fact['supplier']}",
+                f"  - Invoice date: {fact['invoice_date']}",
+                f"  - Due date: {fact['due_date']}",
+                f"  - Description: {fact['description']}",
+                f"  - Service period: {fact['service_period_start']} to {fact['service_period_end']}",
+                f"  - Subtotal: {fact['subtotal']}",
+                f"  - GST: {fact['gst']}",
+                f"  - Amount due: {fact['amount_due']}",
+                f"  - Evidence: `{fact['evidence_id']}` from `{fact['file_path']}` page {fact['page']}",
+                f"  - Confidence: {fact['confidence']}",
+            ])
+        lines.append("")
+    if payload["findings"]:
+        lines.append("## Findings needing review")
+        for finding in payload["findings"]:
+            lines.extend([
+                f"- {finding['category']}: `{finding['file_path']}`",
+                f"  - Evidence: `{finding['evidence_id']}`",
+                f"  - Action: {finding['recommended_action']}",
+            ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_invoice_facts_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    payload = _build_invoice_facts_payload(state)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_invoice_facts(payload))
+    json_output = output.with_suffix(".json")
+    json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported invoice facts → {output}")
+    print(f"Exported invoice facts JSON → {json_output}")
+    return 0 if not payload["findings"] else 1
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -2606,6 +2751,14 @@ def build_parser() -> argparse.ArgumentParser:
     bank_transactions_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     bank_transactions_parser.add_argument("--output", default="outputs/bank_transactions.md")
     bank_transactions_parser.set_defaults(func=_export_bank_transactions_command)
+
+    invoice_facts_parser = subparsers.add_parser(
+        "export-invoice-facts",
+        help="Extract evidence-linked invoice facts from source evidence.",
+    )
+    invoice_facts_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    invoice_facts_parser.add_argument("--output", default="outputs/invoice_facts.md")
+    invoice_facts_parser.set_defaults(func=_export_invoice_facts_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",
