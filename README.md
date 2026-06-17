@@ -78,6 +78,45 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli review-exceptions \
   --approved-by "Reviewer Name"
 ```
 
+Apply a batch of exception decisions:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli review-exceptions \
+  --state outputs/engagement_state.json \
+  --decisions decisions.json
+```
+
+Record final sign-off after readiness passes:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli sign-off-engagement \
+  --state outputs/engagement_state.json \
+  --approved-by "Reviewer Name" \
+  --rationale "All review gates cleared."
+```
+
+Export a workpaper pack folder:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-workpaper-pack \
+  --state outputs/engagement_state.json \
+  --output-dir outputs/workpaper_pack
+```
+
+Record and list approved preference rules:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli record-preference \
+  --state outputs/engagement_state.json \
+  --scope client \
+  --subject "XYZ Trust" \
+  --rule "Present investment income by fund manager." \
+  --approved-by "Reviewer Name"
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli list-preferences \
+  --state outputs/engagement_state.json
+```
+
 Import source pipeline control issues into a new engagement state exception queue:
 
 ```bash

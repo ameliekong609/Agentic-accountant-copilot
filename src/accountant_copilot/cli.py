@@ -12,6 +12,7 @@ from accountant_copilot.orchestrator.planner import build_readiness_report, plan
 from accountant_copilot.state.decisions import AccountantDecision, DecisionStatus
 from accountant_copilot.state.engagement import EngagementState
 from accountant_copilot.state.exceptions import ExceptionItem, ExceptionStatus
+from accountant_copilot.state.preferences import PreferenceRule, PreferenceScope, PreferenceStatus
 
 
 DEFAULT_STATE_PATH = Path("outputs/engagement_state.json")
@@ -318,9 +319,52 @@ def _usage_error(message: str) -> None:
     raise SystemExit(2)
 
 
+def _validate_review_decision_payload(payload: dict) -> tuple[str, ExceptionStatus, str, str]:
+    exception_id = payload.get("exception_id")
+    action_value = payload.get("action")
+    rationale = payload.get("rationale")
+    approved_by = payload.get("approved_by")
+    if not exception_id:
+        _usage_error("batch decision missing exception_id")
+    if action_value not in {ExceptionStatus.RESOLVED.value, ExceptionStatus.ACCEPTED_RISK.value, ExceptionStatus.REJECTED.value}:
+        _usage_error(f"invalid batch action for {exception_id}: {action_value}")
+    if not rationale:
+        _usage_error(f"batch decision for {exception_id} requires rationale")
+    if not approved_by:
+        _usage_error(f"batch decision for {exception_id} requires approved_by")
+    return exception_id, ExceptionStatus(action_value), rationale, approved_by
+
+
+def _apply_review_batch(state: EngagementState, decisions_path: Path) -> int:
+    try:
+        payload = json.loads(decisions_path.read_text())
+    except FileNotFoundError:
+        _usage_error(f"Batch decisions file not found: {decisions_path}")
+    except json.JSONDecodeError as exc:
+        _usage_error(f"Batch decisions file is not valid JSON: {exc}")
+    entries = payload.get("decisions")
+    if not isinstance(entries, list):
+        _usage_error("Batch decisions file must contain a decisions list")
+    parsed = [_validate_review_decision_payload(entry) for entry in entries]
+    by_id = {item.exception_id: item for item in state.exceptions}
+    for exception_id, _action, _rationale, _approved_by in parsed:
+        if exception_id not in by_id:
+            _usage_error(f"Unknown exception_id in batch: {exception_id}")
+    for exception_id, action, rationale, approved_by in parsed:
+        _record_review_decision(state, by_id[exception_id], action, rationale, approved_by)
+    return len(parsed)
+
+
 def _review_exceptions_command(args: argparse.Namespace) -> int:
     state_path = Path(args.state)
     state = load_engagement_state(state_path)
+
+    if args.decisions:
+        count = _apply_review_batch(state, Path(args.decisions))
+        save_engagement_state(state_path, state)
+        print(f"Applied {count} exception review decisions")
+        print(format_inspection(inspect_engagement(state)), end="")
+        return 0 if inspect_engagement(state)["final_output_allowed"] else 1
 
     if not args.exception_id:
         print(format_exception_review(state), end="")
@@ -348,6 +392,86 @@ def _review_exceptions_command(args: argparse.Namespace) -> int:
     print(f"Updated exception {item.exception_id}: {item.status.value}")
     print(format_inspection(inspect_engagement(state)), end="")
     return 0 if inspect_engagement(state)["final_output_allowed"] else 1
+
+
+def _sign_off_engagement_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    payload = inspect_engagement(state)
+    if not payload["final_output_allowed"]:
+        print(f"Cannot sign off engagement: {payload['readiness_summary']}", file=sys.stderr)
+        return 1
+    if not args.approved_by:
+        _usage_error("--approved-by is required")
+    if not args.rationale:
+        _usage_error("--rationale is required")
+    decision = AccountantDecision(
+        decision_id=f"decision_final_signoff_{len(state.decisions) + 1:04d}",
+        question="May the final financial statement workpaper pack be released?",
+        selected_option="final_signoff",
+        rationale=args.rationale,
+        status=DecisionStatus.APPROVED,
+        approved_by=args.approved_by,
+        evidence_refs=[state.statements_ref] if state.statements_ref else [],
+    )
+    state.decisions.append(decision)
+    save_engagement_state(state_path, state)
+    print(f"Engagement signed off by {args.approved_by}")
+    print(format_inspection(inspect_engagement(state)), end="")
+    return 0
+
+
+def _export_workpaper_pack_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = inspect_engagement(state)
+    (output_dir / "engagement_summary.md").write_text(format_inspection(payload))
+    (output_dir / "exception_review.md").write_text(format_exception_review(state))
+    (output_dir / "audit_trail.md").write_text(format_audit_trail(state))
+    (output_dir / "readiness.json").write_text(json.dumps(payload, indent=2, sort_keys=True))
+    (output_dir / "decisions.json").write_text(json.dumps([d.model_dump() for d in state.decisions], indent=2, sort_keys=True))
+    print(f"Exported workpaper pack → {output_dir}")
+    return 0 if payload["final_output_allowed"] else 1
+
+
+def _record_preference_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    status = PreferenceStatus.APPROVED if args.approved_by else PreferenceStatus.SUGGESTED
+    preference = PreferenceRule(
+        scope=PreferenceScope(args.scope),
+        subject=args.subject,
+        rule=args.rule,
+        status=status,
+        approved_by=args.approved_by,
+        evidence_refs=list(args.evidence_ref or []),
+    )
+    state.preferences.append(preference)
+    save_engagement_state(state_path, state)
+    print(f"Recorded preference {preference.preference_id} ({preference.status.value})")
+    return 0
+
+
+def format_preferences(state: EngagementState) -> str:
+    lines = ["Preferences", f"Engagement: {state.entity_name}", ""]
+    if not state.preferences:
+        lines.append("No preferences recorded.")
+    else:
+        for pref in sorted(state.preferences, key=lambda item: item.preference_id):
+            lines.extend([
+                f"- {pref.preference_id} [{pref.status.value}] {pref.scope.value}:{pref.subject}",
+                f"  Rule: {pref.rule}",
+                f"  Approved by: {pref.approved_by or 'none recorded'}",
+                f"  Evidence: {_refs_text(pref.evidence_refs)}",
+            ])
+    return "\n".join(lines) + "\n"
+
+
+def _list_preferences_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    print(format_preferences(state), end="")
+    return 0
 
 
 def _import_source_exceptions_command(args: argparse.Namespace) -> int:
@@ -439,7 +563,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review_parser.add_argument("--rationale", default=None, help="Accountant rationale for the decision.")
     review_parser.add_argument("--approved-by", default=None, help="Reviewer name for the approved decision.")
+    review_parser.add_argument("--decisions", default=None, help="JSON batch file of exception review decisions.")
     review_parser.set_defaults(func=_review_exceptions_command)
+
+    signoff_parser = subparsers.add_parser(
+        "sign-off-engagement",
+        help="Record final accountant sign-off when readiness allows release.",
+    )
+    signoff_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    signoff_parser.add_argument("--approved-by", required=True)
+    signoff_parser.add_argument("--rationale", required=True)
+    signoff_parser.set_defaults(func=_sign_off_engagement_command)
+
+    pack_parser = subparsers.add_parser(
+        "export-workpaper-pack",
+        help="Export a review-ready markdown/JSON workpaper pack folder.",
+    )
+    pack_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    pack_parser.add_argument("--output-dir", required=True)
+    pack_parser.set_defaults(func=_export_workpaper_pack_command)
+
+    record_pref_parser = subparsers.add_parser(
+        "record-preference",
+        help="Record an engagement/client/accountant/firm preference rule.",
+    )
+    record_pref_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    record_pref_parser.add_argument("--scope", required=True, choices=[scope.value for scope in PreferenceScope])
+    record_pref_parser.add_argument("--subject", required=True)
+    record_pref_parser.add_argument("--rule", required=True)
+    record_pref_parser.add_argument("--approved-by", default=None)
+    record_pref_parser.add_argument("--evidence-ref", action="append", default=[])
+    record_pref_parser.set_defaults(func=_record_preference_command)
+
+    list_pref_parser = subparsers.add_parser(
+        "list-preferences",
+        help="List preference rules recorded in engagement state.",
+    )
+    list_pref_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    list_pref_parser.set_defaults(func=_list_preferences_command)
 
     import_parser = subparsers.add_parser(
         "import-source-exceptions",
