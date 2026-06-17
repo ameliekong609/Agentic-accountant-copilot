@@ -6,6 +6,7 @@ import csv
 import hashlib
 import json
 import sys
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
@@ -1279,6 +1280,61 @@ def _import_trial_balance_command(args: argparse.Namespace) -> int:
     return 0 if blockers == 0 else 1
 
 
+def _render_xlsx_statements_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        ("Draft Financial Statements", ""),
+        ("Entity", state.entity_name),
+        ("Financial year", f"{state.fy_start} to {state.fy_end}"),
+        ("CoA accounts", str(len(state.chart_accounts))),
+        ("Open exceptions", str(len(state.open_exceptions()))),
+    ]
+    sheet_rows = []
+    for idx, (label, value) in enumerate(rows, start=1):
+        sheet_rows.append(f'<row r="{idx}"><c r="A{idx}" t="inlineStr"><is><t>{_html_escape(label)}</t></is></c><c r="B{idx}" t="inlineStr"><is><t>{_html_escape(value)}</t></is></c></row>')
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
+        archive.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        archive.writestr("xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Statements" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        archive.writestr("xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+        archive.writestr("xl/worksheets/sheet1.xml", f'<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{"".join(sheet_rows)}</sheetData></worksheet>')
+    status = "passed" if output.exists() else "failed"
+    verifier = {"output_id": "out_xlsx_statements", "file_path": str(output), "artifact_type": "xlsx_financial_statements", "status": status, "checks": [{"check": "xlsx_zip_structure", "status": status}]}
+    verifier_path = Path(args.verifier_result)
+    verifier_path.parent.mkdir(parents=True, exist_ok=True)
+    verifier_path.write_text(json.dumps(verifier, indent=2, sort_keys=True))
+    state.output_artifacts = [item for item in state.output_artifacts if item.output_id != "out_xlsx_statements"]
+    state.output_artifacts.append(OutputArtifact(output_id="out_xlsx_statements", file_path=str(output), artifact_type="xlsx_financial_statements", verifier_status=status, created_at=datetime.now(timezone.utc).isoformat(), source_state_hash=state_hash(state)))
+    state.statements_ref = str(output)
+    save_engagement_state(state_path, state)
+    print(f"Rendered XLSX statements → {output}")
+    return 0 if status == "passed" else 1
+
+
+def _export_local_ui_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    review_href = Path(args.review_ui).name
+    html = f"""<!doctype html>
+<html><head><meta charset=\"utf-8\"><title>Internal Accountant Copilot — {_html_escape(state.entity_name)}</title></head>
+<body>
+<h1>Internal Accountant Copilot — {_html_escape(state.entity_name)}</h1>
+<p>This local wrapper links the safe review artifacts for internal use.</p>
+<ul>
+<li><a href=\"{_html_escape(review_href)}\">Open accountant review UI</a></li>
+<li>State: <code>{_html_escape(str(Path(args.state)))}</code></li>
+</ul>
+</body></html>
+"""
+    output.write_text(html)
+    print(f"Exported local UI wrapper → {output}")
+    return 0
+
+
 def _run_demo_command(args: argparse.Namespace) -> int:
     base = Path(args.output_dir)
     blocked = base / "blocked"
@@ -1463,22 +1519,85 @@ def _export_release_manifest_file(state_path: Path, output: Path, workpaper_pack
     return 0
 
 
+def _apply_review_ui_decisions_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    payload = json.loads(Path(args.decisions).read_text())
+    if payload.get("engagement_id") not in {None, state.engagement_id}:
+        print("Decision file engagement_id does not match state", file=sys.stderr)
+        return 2
+    applied = 0
+    for item in payload.get("decisions", []):
+        if not item.get("action"):
+            continue
+        exception = _find_exception(state, item["exception_id"])
+        action = ExceptionStatus(item["action"])
+        _record_review_decision(state=state, item=exception, action=action, rationale=item.get("rationale", ""), approved_by=item.get("approved_by", ""))
+        applied += 1
+    for item in payload.get("coa_decisions", []):
+        if item.get("action") != "approve":
+            continue
+        account = next((account for account in state.chart_accounts if account.account_id == item.get("account_id")), None)
+        if account is None:
+            _usage_error(f"Unknown account_id: {item.get('account_id')}")
+        account.status = "approved"
+        state.decisions.append(AccountantDecision(decision_id=f"decision_approve_coa_{len(state.decisions) + 1:04d}", question=f"Approve CoA account {account.account_id}?", selected_option="approve_coa", rationale=item.get("rationale", ""), status=DecisionStatus.APPROVED, approved_by=item.get("approved_by", ""), evidence_refs=account.source_evidence_refs))
+        applied += 1
+    if state.chart_accounts and not [account for account in state.chart_accounts if account.status != "approved"]:
+        state.coa_review_required = True
+        state.coa_review_status = "approved"
+    for item in payload.get("adjustment_decisions", []):
+        adjustment = next((adj for adj in state.adjustment_proposals if adj.adjustment_id == item.get("adjustment_id")), None)
+        if adjustment is None:
+            _usage_error(f"Unknown adjustment_id: {item.get('adjustment_id')}")
+        action = item.get("action")
+        adjustment.status = "approved" if action == "approve" else "rejected"
+        decision = AccountantDecision(decision_id=f"decision_{action}_adjustment_{len(state.decisions) + 1:04d}", question=f"{action} adjustment {adjustment.adjustment_id}?", selected_option=f"{action}_adjustment", rationale=item.get("rationale", ""), status=DecisionStatus.APPROVED, approved_by=item.get("approved_by", ""), evidence_refs=adjustment.source_evidence_refs)
+        state.decisions.append(decision)
+        adjustment.decision_id = decision.decision_id
+        applied += 1
+    if state.adjustment_proposals and not [adj for adj in state.adjustment_proposals if adj.status != "approved"]:
+        state.adjustment_review_status = "approved"
+    for item in payload.get("preference_decisions", []):
+        pref = next((pref for pref in state.preferences if pref.preference_id == item.get("preference_id")), None)
+        if pref and item.get("action") == "apply":
+            state.decisions.append(AccountantDecision(decision_id=f"decision_apply_preference_{len(state.decisions) + 1:04d}", question=f"Apply preference {pref.preference_id}?", selected_option="apply_preference", rationale=item.get("rationale", ""), status=DecisionStatus.APPROVED, approved_by=item.get("approved_by", ""), evidence_refs=[pref.preference_id]))
+            applied += 1
+    for item in payload.get("output_verifier_decisions", []):
+        if item.get("action"):
+            state.decisions.append(AccountantDecision(decision_id=f"decision_output_verifier_{len(state.decisions) + 1:04d}", question=f"Record output verifier decision {item.get('output_id')}?", selected_option=item.get("action", "output_verifier_decision"), rationale=item.get("rationale", "Verifier reviewed."), status=DecisionStatus.APPROVED, approved_by=item.get("approved_by", ""), evidence_refs=[item.get("output_id", "")]))
+            applied += 1
+    save_engagement_state(state_path, state)
+    print(f"Applied {applied} review UI decisions")
+    return 0
+
+
 def _run_engagement_command(args: argparse.Namespace) -> int:
     state_path = Path(args.state)
     state = load_engagement_state(state_path)
     before = state_hash(state)
+
+    if getattr(args, "bank_csv", None):
+        _ingest_source_document_command(argparse.Namespace(state=str(state_path), document_id="doc_bank", file_path=args.bank_csv, document_type="bank_statement", entity=state.entity_name, period_start=state.fy_start, period_end=state.fy_end, notes="Internal run source intake."))
+    if getattr(args, "events_csv", None):
+        _ingest_source_document_command(argparse.Namespace(state=str(state_path), document_id="doc_events", file_path=args.events_csv, document_type="supporting_events", entity=state.entity_name, period_start=state.fy_start, period_end=state.fy_end, notes="Internal run source intake."))
+    if getattr(args, "trial_balance_csv", None):
+        _import_trial_balance_command(argparse.Namespace(state=str(state_path), trial_balance_csv=args.trial_balance_csv))
+    if getattr(args, "bank_csv", None) and getattr(args, "events_csv", None):
+        matches_path = getattr(args, "matches_output", None) or str(Path(args.review_packet_dir).parent / "matches.json")
+        _match_transactions_command(argparse.Namespace(state=str(state_path), bank_csv=args.bank_csv, events_csv=args.events_csv, output=matches_path, amount_tolerance=getattr(args, "amount_tolerance", "0"), date_window_days=getattr(args, "date_window_days", "0")))
+    if getattr(args, "statement_package_dir", None):
+        _render_statement_package_command(argparse.Namespace(state=str(state_path), output_dir=args.statement_package_dir))
+
+    state = load_engagement_state(state_path)
     payload = inspect_engagement(state)
     if not payload["final_output_allowed"]:
         packet_dir = Path(args.review_packet_dir)
-        output_dir = packet_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "README.md").write_text(f"# Accountant Review Packet — {state.entity_name}\n\nEngagement blocked.\n")
-        (output_dir / "open_exceptions.md").write_text(format_exception_review(state))
-        (output_dir / "document_summary.md").write_text(format_documents(state))
-        (output_dir / "evidence_summary.md").write_text(_format_evidence_summary(state))
-        (output_dir / "preference_recommendations.md").write_text("Recommended preferences\n")
-        (output_dir / "review_decisions_template.json").write_text(json.dumps({"engagement_id": state.engagement_id, "decisions": []}, indent=2))
-        _record_state_transition(state, command="run-engagement", before_hash=before, summary="Engagement blocked; review packet exported.")
+        _export_review_packet_command(argparse.Namespace(state=str(state_path), output_dir=str(packet_dir)))
+        if getattr(args, "review_ui", None):
+            _export_review_ui_command(argparse.Namespace(state=str(state_path), output=args.review_ui))
+        state = load_engagement_state(state_path)
+        _record_state_transition(state, command="run-engagement", before_hash=before, summary="Engagement blocked; review packet and UI exported.")
         save_engagement_state(state_path, state)
         print(f"Engagement blocked; review packet exported → {packet_dir}")
         return 1
@@ -1549,7 +1668,23 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     run_parser.add_argument("--review-packet-dir", default="outputs/review_packet")
     run_parser.add_argument("--release-manifest", default="outputs/release_manifest.json")
+    run_parser.add_argument("--bank-csv", default=None)
+    run_parser.add_argument("--events-csv", default=None)
+    run_parser.add_argument("--trial-balance-csv", default=None)
+    run_parser.add_argument("--matches-output", default=None)
+    run_parser.add_argument("--statement-package-dir", default=None)
+    run_parser.add_argument("--review-ui", default=None)
+    run_parser.add_argument("--amount-tolerance", default="0")
+    run_parser.add_argument("--date-window-days", default="0")
     run_parser.set_defaults(func=_run_engagement_command)
+
+    apply_review_ui_parser = subparsers.add_parser(
+        "apply-review-ui-decisions",
+        help="Apply accountant decisions copied from the review UI JSON.",
+    )
+    apply_review_ui_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    apply_review_ui_parser.add_argument("--decisions", required=True)
+    apply_review_ui_parser.set_defaults(func=_apply_review_ui_decisions_command)
 
     ingest_parser = subparsers.add_parser(
         "ingest-source-document",
@@ -1601,6 +1736,24 @@ def build_parser() -> argparse.ArgumentParser:
     tb_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     tb_parser.add_argument("--trial-balance-csv", required=True)
     tb_parser.set_defaults(func=_import_trial_balance_command)
+
+    xlsx_parser = subparsers.add_parser(
+        "render-xlsx-statements",
+        help="Render XLSX financial statements with verifier detail.",
+    )
+    xlsx_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    xlsx_parser.add_argument("--output", required=True)
+    xlsx_parser.add_argument("--verifier-result", required=True)
+    xlsx_parser.set_defaults(func=_render_xlsx_statements_command)
+
+    local_ui_parser = subparsers.add_parser(
+        "export-local-ui",
+        help="Export a local internal UI wrapper linking review artifacts.",
+    )
+    local_ui_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    local_ui_parser.add_argument("--review-ui", required=True)
+    local_ui_parser.add_argument("--output", required=True)
+    local_ui_parser.set_defaults(func=_export_local_ui_command)
 
     demo_parser = subparsers.add_parser(
         "run-demo",

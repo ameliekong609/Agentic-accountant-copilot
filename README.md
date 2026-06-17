@@ -323,3 +323,32 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli render-statement-package \
   --state outputs/engagement_state.json \
   --output-dir outputs/statement_package
 ```
+
+## Internal workflow commands
+
+Run the internal engagement flow from existing source files:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli run-engagement \
+  --state outputs/engagement_state.json \
+  --bank-csv source/bank.csv \
+  --events-csv source/events.csv \
+  --trial-balance-csv source/trial_balance.csv \
+  --statement-package-dir outputs/statement_package \
+  --review-packet-dir outputs/review_packet \
+  --review-ui outputs/review.html
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-review-ui-decisions \
+  --state outputs/engagement_state.json \
+  --decisions outputs/review_decisions_template.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli render-xlsx-statements \
+  --state outputs/engagement_state.json \
+  --output outputs/financial_statements.xlsx \
+  --verifier-result outputs/xlsx_verifier_result.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-local-ui \
+  --state outputs/engagement_state.json \
+  --review-ui outputs/review.html \
+  --output outputs/local_ui/index.html
+```

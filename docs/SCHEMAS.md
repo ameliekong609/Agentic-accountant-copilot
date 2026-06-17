@@ -187,3 +187,13 @@ CSV source intake now validates required `date`, `description`, and `amount` col
 `import-trial-balance` imports trial balance CSV rows into structured CoA accounts and flags duplicate account codes or suspense accounts as accountant-review exceptions.
 
 `render-statement-package` writes a structured draft statement package folder with balance sheet, income/distribution statement, verifier detail, and output artifact registration.
+
+## Internal workflow commands
+
+`run-engagement` can now take internal source inputs (`--bank-csv`, `--events-csv`, `--trial-balance-csv`) and orchestrate intake, matching, trial balance import, statement package rendering, review packet export, and review UI export without bypassing accountant gates.
+
+`apply-review-ui-decisions` applies the copyable review UI decision JSON back into engagement state for exceptions, CoA approvals, adjustment decisions, preferences, and output verifier decisions.
+
+`render-xlsx-statements` writes a dependency-free XLSX financial statement workbook and verifier result, registering an `xlsx_financial_statements` output artifact.
+
+`export-local-ui` writes a lightweight internal HTML wrapper linking local review artifacts. It is for internal workflow convenience and does not replace review controls.
