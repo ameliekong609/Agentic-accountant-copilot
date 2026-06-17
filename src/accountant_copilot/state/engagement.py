@@ -11,6 +11,7 @@ from typing import Any
 
 from ._json import JsonModelMixin
 from .decisions import AccountantDecision, DecisionStatus
+from .evidence import EvidenceRef
 from .exceptions import ExceptionItem, ExceptionStatus
 from .preferences import PreferenceRule, PreferenceStatus
 
@@ -32,6 +33,7 @@ class EngagementState(JsonModelMixin):
     exceptions: list[ExceptionItem] = field(default_factory=list)
     decisions: list[AccountantDecision] = field(default_factory=list)
     preferences: list[PreferenceRule] = field(default_factory=list)
+    evidence: list[EvidenceRef] = field(default_factory=list)
     agent_tasks: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
@@ -52,6 +54,7 @@ class EngagementState(JsonModelMixin):
             exceptions=[ExceptionItem.from_dict(x) for x in data.get("exceptions", [])],
             decisions=[AccountantDecision.from_dict(x) for x in data.get("decisions", [])],
             preferences=[PreferenceRule.from_dict(x) for x in data.get("preferences", [])],
+            evidence=[EvidenceRef.from_dict(x) for x in data.get("evidence", [])],
             agent_tasks=list(data.get("agent_tasks", [])),
         )
 

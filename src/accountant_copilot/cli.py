@@ -10,6 +10,7 @@ from typing import Sequence
 from accountant_copilot.adapters.source_pipeline import import_source_pipeline_exceptions
 from accountant_copilot.orchestrator.planner import build_readiness_report, plan_next_tasks
 from accountant_copilot.state.decisions import AccountantDecision, DecisionStatus
+from accountant_copilot.state.evidence import EvidenceRef
 from accountant_copilot.state.engagement import EngagementState
 from accountant_copilot.state.exceptions import ExceptionItem, ExceptionStatus
 from accountant_copilot.state.preferences import PreferenceRule, PreferenceScope, PreferenceStatus
@@ -227,6 +228,31 @@ def format_audit_trail(state: EngagementState) -> str:
                     f"- Approved by: {decision.approved_by or 'none recorded'}",
                     f"- Evidence: {_refs_text(decision.evidence_refs)}",
                     f"- Rationale: {decision.rationale}",
+                ]
+            )
+
+    lines.extend(["", "## Evidence registry"])
+    if not state.evidence:
+        lines.append("No structured evidence recorded.")
+    else:
+        for evidence in sorted(state.evidence, key=lambda item: item.evidence_id):
+            details = [f"source_type={evidence.source_type}", f"file={evidence.file_path}"]
+            if evidence.page:
+                details.append(f"page={evidence.page}")
+            if evidence.row:
+                details.append(f"row={evidence.row}")
+            if evidence.date:
+                details.append(f"date={evidence.date}")
+            if evidence.amount:
+                details.append(f"amount={evidence.amount}")
+            if evidence.confidence:
+                details.append(f"confidence={evidence.confidence}")
+            lines.extend(
+                [
+                    "",
+                    f"### {evidence.evidence_id}",
+                    f"- {'; '.join(details)}",
+                    f"- Quote: {evidence.quote or 'none recorded'}",
                 ]
             )
 
@@ -474,6 +500,138 @@ def _list_preferences_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _validate_state_command(args: argparse.Namespace) -> int:
+    try:
+        load_engagement_state(Path(args.state))
+    except SystemExit as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print("Engagement state is valid")
+    return 0
+
+
+def _record_evidence_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    evidence = EvidenceRef(
+        evidence_id=args.evidence_id,
+        source_type=args.source_type,
+        file_path=args.file_path,
+        page=args.page,
+        row=args.row,
+        quote=args.quote,
+        amount=args.amount,
+        date=args.date,
+        confidence=args.confidence,
+    )
+    state.evidence.append(evidence)
+    save_engagement_state(state_path, state)
+    print(f"Recorded evidence {evidence.evidence_id}")
+    return 0
+
+
+def _export_review_template_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    template = {
+        "engagement_id": state.engagement_id,
+        "entity_name": state.entity_name,
+        "decisions": [
+            {
+                "exception_id": item.exception_id,
+                "severity": item.severity.value,
+                "category": item.category,
+                "description": item.description,
+                "evidence_refs": item.evidence_refs,
+                "recommended_action": item.recommended_action,
+                "action": "",
+                "rationale": "",
+                "approved_by": "",
+            }
+            for item in state.open_exceptions()
+        ],
+    }
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(template, indent=2, sort_keys=True))
+    print(f"Exported review template → {output}")
+    return 0
+
+
+def _recommended_preferences(state: EngagementState) -> list[PreferenceRule]:
+    candidates: list[PreferenceRule] = []
+    subjects = {state.entity_name, state.entity_type, state.engagement_id, "*", "all", "global"}
+    for pref in state.preferences:
+        if not pref.is_approved:
+            continue
+        if pref.scope in {PreferenceScope.FIRM, PreferenceScope.ACCOUNTANT} or pref.subject in subjects:
+            candidates.append(pref)
+    return candidates
+
+
+def _recommend_preferences_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    prefs = _recommended_preferences(state)
+    print("Recommended preferences")
+    if not prefs:
+        print("No approved preferences match this engagement.")
+    for pref in prefs:
+        print(f"- {pref.preference_id}: {pref.rule}")
+    return 0
+
+
+def _apply_preferences_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    pref = next((item for item in state.preferences if item.preference_id == args.preference_id), None)
+    if pref is None:
+        _usage_error(f"Unknown preference_id: {args.preference_id}")
+    if not pref.is_approved:
+        _usage_error(f"Preference is not approved: {args.preference_id}")
+    decision = AccountantDecision(
+        decision_id=f"decision_apply_preference_{len(state.decisions) + 1:04d}",
+        question=f"Apply preference {pref.preference_id} to this engagement?",
+        selected_option="apply_preference",
+        rationale=args.rationale,
+        status=DecisionStatus.APPROVED,
+        approved_by=args.approved_by,
+        evidence_refs=[pref.preference_id],
+    )
+    state.decisions.append(decision)
+    save_engagement_state(state_path, state)
+    print(f"Applied preference {pref.preference_id}")
+    return 0
+
+
+def _final_signoff_decision(state: EngagementState) -> AccountantDecision | None:
+    for decision in state.decisions:
+        if decision.selected_option == "final_signoff" and decision.is_approved:
+            return decision
+    return None
+
+
+def _export_release_manifest_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    signoff = _final_signoff_decision(state)
+    if signoff is None:
+        print("Cannot export release manifest before final sign-off", file=sys.stderr)
+        return 1
+    payload = inspect_engagement(state)
+    manifest = {
+        "engagement_id": state.engagement_id,
+        "entity_name": state.entity_name,
+        "final_output_allowed": payload["final_output_allowed"],
+        "signoff_decision_id": signoff.decision_id,
+        "workpaper_pack": args.workpaper_pack,
+        "audit_trail": args.audit_trail,
+        "created_outputs": [ref for ref in [state.statements_ref, args.workpaper_pack, args.audit_trail] if ref],
+    }
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    print(f"Exported release manifest → {output}")
+    return 0
+
+
 def _import_source_exceptions_command(args: argparse.Namespace) -> int:
     exceptions = import_source_pipeline_exceptions(
         matching_path=Path(args.matching),
@@ -524,6 +682,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON instead of text.",
     )
     inspect_parser.set_defaults(func=_inspect_engagement_command)
+
+    validate_parser = subparsers.add_parser(
+        "validate-state",
+        help="Validate engagement state JSON before running state-changing commands.",
+    )
+    validate_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    validate_parser.set_defaults(func=_validate_state_command)
+
+    evidence_parser = subparsers.add_parser(
+        "record-evidence",
+        help="Record a structured source evidence reference in engagement state.",
+    )
+    evidence_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    evidence_parser.add_argument("--evidence-id", required=True)
+    evidence_parser.add_argument("--source-type", required=True)
+    evidence_parser.add_argument("--file-path", required=True)
+    evidence_parser.add_argument("--page", default=None)
+    evidence_parser.add_argument("--row", default=None)
+    evidence_parser.add_argument("--quote", default=None)
+    evidence_parser.add_argument("--amount", default=None)
+    evidence_parser.add_argument("--date", default=None)
+    evidence_parser.add_argument("--confidence", default=None)
+    evidence_parser.set_defaults(func=_record_evidence_command)
+
+    template_parser = subparsers.add_parser(
+        "export-review-template",
+        help="Export a JSON template for batch accountant exception review.",
+    )
+    template_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    template_parser.add_argument("--output", required=True)
+    template_parser.set_defaults(func=_export_review_template_command)
 
     audit_parser = subparsers.add_parser(
         "export-audit-trail",
@@ -601,6 +790,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     list_pref_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     list_pref_parser.set_defaults(func=_list_preferences_command)
+
+    recommend_pref_parser = subparsers.add_parser(
+        "recommend-preferences",
+        help="Recommend approved preference rules that match this engagement.",
+    )
+    recommend_pref_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    recommend_pref_parser.set_defaults(func=_recommend_preferences_command)
+
+    apply_pref_parser = subparsers.add_parser(
+        "apply-preferences",
+        help="Record an approved decision applying a preference to this engagement.",
+    )
+    apply_pref_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    apply_pref_parser.add_argument("--preference-id", required=True)
+    apply_pref_parser.add_argument("--approved-by", required=True)
+    apply_pref_parser.add_argument("--rationale", required=True)
+    apply_pref_parser.set_defaults(func=_apply_preferences_command)
+
+    manifest_parser = subparsers.add_parser(
+        "export-release-manifest",
+        help="Export a final release manifest after accountant sign-off.",
+    )
+    manifest_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    manifest_parser.add_argument("--output", required=True)
+    manifest_parser.add_argument("--workpaper-pack", default=None)
+    manifest_parser.add_argument("--audit-trail", default=None)
+    manifest_parser.set_defaults(func=_export_release_manifest_command)
 
     import_parser = subparsers.add_parser(
         "import-source-exceptions",

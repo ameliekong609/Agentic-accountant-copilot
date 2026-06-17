@@ -55,6 +55,29 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-audit-trail \
   --output outputs/audit_trail.md
 ```
 
+Validate state and record structured evidence:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli validate-state \
+  --state outputs/engagement_state.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli record-evidence \
+  --state outputs/engagement_state.json \
+  --evidence-id ev_bank_row_7 \
+  --source-type bank_statement \
+  --file-path bank.csv \
+  --row 7 \
+  --quote "Source quote text"
+```
+
+Export a batch review template:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-review-template \
+  --state outputs/engagement_state.json \
+  --output outputs/review_decisions_template.json
+```
+
 Exit code policy:
 
 - `0` — final output is allowed by current readiness gate.
@@ -115,6 +138,25 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli record-preference \
 
 PYTHONPATH=src python3.11 -m accountant_copilot.cli list-preferences \
   --state outputs/engagement_state.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli recommend-preferences \
+  --state outputs/engagement_state.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-preferences \
+  --state outputs/engagement_state.json \
+  --preference-id pref_client_income \
+  --approved-by "Reviewer Name" \
+  --rationale "Matches approved client convention."
+```
+
+Export a final release manifest after sign-off:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-release-manifest \
+  --state outputs/engagement_state.json \
+  --output outputs/release_manifest.json \
+  --workpaper-pack outputs/workpaper_pack \
+  --audit-trail outputs/audit_trail.md
 ```
 
 Import source pipeline control issues into a new engagement state exception queue:
@@ -158,3 +200,4 @@ pytest
 - `docs/ARCHITECTURE.md`
 - `docs/AGENT_ROLES.md`
 - `docs/CONTROLS_AND_POLICIES.md`
+- `docs/SCHEMAS.md`
