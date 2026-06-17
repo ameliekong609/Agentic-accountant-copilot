@@ -61,6 +61,15 @@ Validate state and record structured evidence:
 PYTHONPATH=src python3.11 -m accountant_copilot.cli validate-state \
   --state outputs/engagement_state.json
 
+PYTHONPATH=src python3.11 -m accountant_copilot.cli record-document \
+  --state outputs/engagement_state.json \
+  --document-id doc_bank_001 \
+  --file-path source/bank.csv \
+  --document-type bank_statement \
+  --entity "XYZ Trust" \
+  --period-start 2025-01-01 \
+  --period-end 2025-01-31
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli record-evidence \
   --state outputs/engagement_state.json \
   --evidence-id ev_bank_row_7 \
@@ -81,20 +90,39 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-review-template \
 Review CoA, adjustments, and export accountant review packet:
 
 ```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli record-coa-account \
+  --state outputs/engagement_state.json \
+  --account-id acct_cash \
+  --code 1000 \
+  --name "Cash at Bank" \
+  --type asset \
+  --presentation-group "Current assets" \
+  --opening-balance 1000.00
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli review-coa \
   --state outputs/engagement_state.json
 
 PYTHONPATH=src python3.11 -m accountant_copilot.cli approve-coa \
   --state outputs/engagement_state.json \
+  --account-id acct_cash \
   --approved-by "Reviewer Name" \
   --rationale "CoA presentation and opening balances approved."
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli record-adjustment \
+  --state outputs/engagement_state.json \
+  --adjustment-id adj_dist \
+  --description "Year-end distribution accrual" \
+  --debit-account "Distribution expense" \
+  --credit-account "Distribution payable" \
+  --amount 5000.00 \
+  --date 2025-06-30
 
 PYTHONPATH=src python3.11 -m accountant_copilot.cli review-adjustments \
   --state outputs/engagement_state.json
 
 PYTHONPATH=src python3.11 -m accountant_copilot.cli approve-adjustment \
   --state outputs/engagement_state.json \
-  --exception-id source_journal_finding_0001 \
+  --adjustment-id adj_dist \
   --approved-by "Reviewer Name" \
   --rationale "Adjustment ties to support."
 
@@ -177,6 +205,13 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-preferences \
 Export a final release manifest after sign-off:
 
 ```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli record-output \
+  --state outputs/engagement_state.json \
+  --output-id out_fs \
+  --file-path outputs/fs.xlsx \
+  --artifact-type financial_statements \
+  --verifier-status passed
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-release-manifest \
   --state outputs/engagement_state.json \
   --output outputs/release_manifest.json \

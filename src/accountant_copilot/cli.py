@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
 from accountant_copilot.adapters.source_pipeline import import_source_pipeline_controls
 from accountant_copilot.orchestrator.planner import build_readiness_report, plan_next_tasks
+from accountant_copilot.state.artifacts import AdjustmentProposal, ChartAccount, OutputArtifact, SourceDocument
 from accountant_copilot.state.decisions import AccountantDecision, DecisionStatus
 from accountant_copilot.state.evidence import EvidenceRef
 from accountant_copilot.state.engagement import EngagementState
@@ -377,12 +380,12 @@ def _validate_review_decision_payload(payload: dict) -> tuple[str, ExceptionStat
     approved_by = payload.get("approved_by")
     if not exception_id:
         _usage_error("batch decision missing exception_id")
-    if action_value not in {ExceptionStatus.RESOLVED.value, ExceptionStatus.ACCEPTED_RISK.value, ExceptionStatus.REJECTED.value}:
-        _usage_error(f"invalid batch action for {exception_id}: {action_value}")
     if not rationale:
         _usage_error(f"batch decision for {exception_id} requires rationale")
     if not approved_by:
         _usage_error(f"batch decision for {exception_id} requires approved_by")
+    if action_value not in {ExceptionStatus.RESOLVED.value, ExceptionStatus.ACCEPTED_RISK.value, ExceptionStatus.REJECTED.value}:
+        _usage_error(f"invalid batch action for {exception_id}: {action_value}")
     return exception_id, ExceptionStatus(action_value), rationale, approved_by
 
 
@@ -627,6 +630,110 @@ def _apply_preferences_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _record_document_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    document = SourceDocument(
+        document_id=args.document_id,
+        file_path=args.file_path,
+        document_type=args.document_type,
+        entity=args.entity,
+        period_start=args.period_start,
+        period_end=args.period_end,
+        source_hash=_sha256_file(Path(args.file_path)),
+        notes=args.notes,
+    )
+    state.source_documents = [d for d in state.source_documents if d.document_id != document.document_id]
+    state.source_documents.append(document)
+    save_engagement_state(state_path, state)
+    print(f"Recorded document {document.document_id}")
+    return 0
+
+
+def format_documents(state: EngagementState) -> str:
+    lines = ["Source documents", f"Engagement: {state.entity_name}", ""]
+    if not state.source_documents:
+        lines.append("No source documents recorded.")
+    for doc in sorted(state.source_documents, key=lambda item: item.document_id):
+        lines.append(f"- {doc.document_id}: {doc.document_type} {doc.file_path} hash={doc.source_hash}")
+    return "\n".join(lines) + "\n"
+
+
+def _list_documents_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    print(format_documents(state), end="")
+    return 0
+
+
+def _record_coa_account_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    account = ChartAccount(
+        account_id=args.account_id,
+        code=args.code,
+        name=args.name,
+        type=args.type,
+        presentation_group=args.presentation_group,
+        opening_balance=args.opening_balance,
+        source_evidence_refs=list(args.evidence_ref or []),
+    )
+    state.chart_accounts = [item for item in state.chart_accounts if item.account_id != account.account_id]
+    state.chart_accounts.append(account)
+    state.coa_review_required = True
+    if state.coa_review_status == "not_required":
+        state.coa_review_status = "pending_review"
+    save_engagement_state(state_path, state)
+    print(f"Recorded CoA account {account.account_id}")
+    return 0
+
+
+def _record_adjustment_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    proposal = AdjustmentProposal(
+        adjustment_id=args.adjustment_id,
+        description=args.description,
+        debit_account=args.debit_account,
+        credit_account=args.credit_account,
+        amount=args.amount,
+        date=args.date,
+        source_evidence_refs=list(args.evidence_ref or []),
+    )
+    state.adjustment_proposals = [item for item in state.adjustment_proposals if item.adjustment_id != proposal.adjustment_id]
+    state.adjustment_proposals.append(proposal)
+    state.adjustment_review_status = "pending_review"
+    save_engagement_state(state_path, state)
+    print(f"Recorded adjustment proposal {proposal.adjustment_id}")
+    return 0
+
+
+def _record_output_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    source_state_hash = hashlib.sha256(state.model_dump_json().encode()).hexdigest()
+    artifact = OutputArtifact(
+        output_id=args.output_id,
+        file_path=args.file_path,
+        artifact_type=args.artifact_type,
+        verifier_status=args.verifier_status,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        source_state_hash=source_state_hash,
+    )
+    state.output_artifacts = [item for item in state.output_artifacts if item.output_id != artifact.output_id]
+    state.output_artifacts.append(artifact)
+    save_engagement_state(state_path, state)
+    print(f"Recorded output artifact {artifact.output_id} ({artifact.verifier_status})")
+    return 0
+
+
 def _review_coa_command(args: argparse.Namespace) -> int:
     state = load_engagement_state(Path(args.state))
     lines = [
@@ -636,13 +743,26 @@ def _review_coa_command(args: argparse.Namespace) -> int:
         f"Status: {state.coa_review_status}",
         "Required decision: approve chart of accounts names, types, opening balances, and presentation grouping.",
     ]
+    for account in sorted(state.chart_accounts, key=lambda item: item.account_id):
+        lines.append(
+            f"- {account.account_id} [{account.status}] {account.code} {account.name} "
+            f"{account.type} {account.presentation_group} opening={account.opening_balance}"
+        )
     print("\n".join(lines) + "\n")
-    return 0 if state.coa_review_status == "approved" else 1
+    pending = [account for account in state.chart_accounts if account.status != "approved"]
+    return 0 if state.coa_review_status == "approved" and not pending else 1
 
 
 def _approve_coa_command(args: argparse.Namespace) -> int:
     state_path = Path(args.state)
     state = load_engagement_state(state_path)
+    evidence_refs = [state.coa_ref] if state.coa_ref else []
+    if getattr(args, "account_id", None):
+        account = next((item for item in state.chart_accounts if item.account_id == args.account_id), None)
+        if account is None:
+            _usage_error(f"Unknown account_id: {args.account_id}")
+        account.status = "approved"
+        evidence_refs.extend(account.source_evidence_refs)
     decision = AccountantDecision(
         decision_id=f"decision_approve_coa_{len(state.decisions) + 1:04d}",
         question="Approve chart of accounts for this engagement?",
@@ -650,11 +770,12 @@ def _approve_coa_command(args: argparse.Namespace) -> int:
         rationale=args.rationale,
         status=DecisionStatus.APPROVED,
         approved_by=args.approved_by,
-        evidence_refs=[state.coa_ref] if state.coa_ref else [],
+        evidence_refs=evidence_refs,
     )
     state.decisions.append(decision)
     state.coa_review_required = True
-    state.coa_review_status = "approved"
+    if not [account for account in state.chart_accounts if account.status != "approved"]:
+        state.coa_review_status = "approved"
     save_engagement_state(state_path, state)
     print(f"CoA approved by {args.approved_by}")
     print(format_inspection(inspect_engagement(state)), end="")
@@ -669,33 +790,54 @@ def _review_adjustments_command(args: argparse.Namespace) -> int:
     state = load_engagement_state(Path(args.state))
     items = _adjustment_items(state)
     lines = ["Adjustment review", f"Engagement: {state.entity_name}", ""]
-    if not items:
+    for proposal in sorted(state.adjustment_proposals, key=lambda item: item.adjustment_id):
+        lines.append(
+            f"- {proposal.adjustment_id} [{proposal.status}] {proposal.date} "
+            f"DR {proposal.debit_account} CR {proposal.credit_account} amount={proposal.amount}: {proposal.description}"
+        )
+    if not items and not state.adjustment_proposals:
         lines.append("No adjustment or journal review items recorded.")
     for item in items:
         lines.extend(_format_exception_item(item))
     print("\n".join(lines) + "\n")
-    return 0 if not [item for item in items if item.is_open or item.status == ExceptionStatus.REJECTED] else 1
+    unresolved_proposals = [proposal for proposal in state.adjustment_proposals if proposal.status != "approved"]
+    return 0 if not unresolved_proposals and not [item for item in items if item.is_open or item.status == ExceptionStatus.REJECTED] else 1
 
 
 def _record_adjustment_decision(args: argparse.Namespace, selected_option: str, status: ExceptionStatus) -> int:
     state_path = Path(args.state)
     state = load_engagement_state(state_path)
-    item = _find_exception(state, args.exception_id)
+    item = None
+    evidence_refs: list[str] = []
+    target_id = getattr(args, "exception_id", None) or getattr(args, "adjustment_id", None)
+    if getattr(args, "adjustment_id", None):
+        proposal = next((p for p in state.adjustment_proposals if p.adjustment_id == args.adjustment_id), None)
+        if proposal is None:
+            _usage_error(f"Unknown adjustment_id: {args.adjustment_id}")
+        proposal.status = "approved" if status == ExceptionStatus.RESOLVED else "rejected"
+        evidence_refs = list(proposal.source_evidence_refs)
+        target_id = proposal.adjustment_id
+    else:
+        item = _find_exception(state, args.exception_id)
+        evidence_refs = list(item.evidence_refs)
     decision = AccountantDecision(
         decision_id=f"decision_{selected_option}_{len(state.decisions) + 1:04d}",
-        question=f"{selected_option.replace('_', ' ').title()} {item.exception_id}?",
+        question=f"{selected_option.replace('_', ' ').title()} {target_id}?",
         selected_option=selected_option,
         rationale=args.rationale,
         status=DecisionStatus.APPROVED,
         approved_by=args.approved_by,
-        evidence_refs=list(item.evidence_refs),
+        evidence_refs=evidence_refs,
     )
     state.decisions.append(decision)
-    item.status = status
-    item.decision_id = decision.decision_id
+    if getattr(args, "adjustment_id", None):
+        proposal.decision_id = decision.decision_id
+    if item is not None:
+        item.status = status
+        item.decision_id = decision.decision_id
     state.adjustment_review_status = "approved" if status == ExceptionStatus.RESOLVED else "rejected"
     save_engagement_state(state_path, state)
-    print(f"Recorded {selected_option} for {item.exception_id}")
+    print(f"Recorded {selected_option} for {target_id}")
     print(format_inspection(inspect_engagement(state)), end="")
     return 0 if inspect_engagement(state)["final_output_allowed"] else 1
 
@@ -734,6 +876,7 @@ def _export_review_packet_command(args: argparse.Namespace) -> int:
     ]) + "\n"
     (output_dir / "README.md").write_text(readme)
     (output_dir / "open_exceptions.md").write_text(format_exception_review(state))
+    (output_dir / "document_summary.md").write_text(format_documents(state))
     (output_dir / "evidence_summary.md").write_text(_format_evidence_summary(state))
     (output_dir / "preference_recommendations.md").write_text("Recommended preferences\n\n" + "\n".join(f"- {p.preference_id}: {p.rule}" for p in _recommended_preferences(state)) + "\n")
     template = {
@@ -766,6 +909,10 @@ def _export_release_manifest_command(args: argparse.Namespace) -> int:
     if signoff is None:
         print("Cannot export release manifest before final sign-off", file=sys.stderr)
         return 1
+    failed_outputs = [artifact for artifact in state.output_artifacts if artifact.verifier_status != "passed"]
+    if failed_outputs:
+        print("Cannot export release manifest: verifier status is not passing", file=sys.stderr)
+        return 1
     state.lifecycle_status = "released"
     save_engagement_state(state_path, state)
     payload = inspect_engagement(state)
@@ -775,6 +922,7 @@ def _export_release_manifest_command(args: argparse.Namespace) -> int:
         "lifecycle_status": state.lifecycle_status,
         "final_output_allowed": payload["final_output_allowed"],
         "signoff_decision_id": signoff.decision_id,
+        "output_artifact_ids": [artifact.output_id for artifact in state.output_artifacts],
         "workpaper_pack": args.workpaper_pack,
         "audit_trail": args.audit_trail,
         "created_outputs": [ref for ref in [state.statements_ref, args.workpaper_pack, args.audit_trail] if ref],
@@ -862,6 +1010,27 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_parser.add_argument("--confidence", default=None)
     evidence_parser.set_defaults(func=_record_evidence_command)
 
+    document_parser = subparsers.add_parser(
+        "record-document",
+        help="Record a source document with a stable hash in the engagement manifest.",
+    )
+    document_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    document_parser.add_argument("--document-id", required=True)
+    document_parser.add_argument("--file-path", required=True)
+    document_parser.add_argument("--document-type", required=True)
+    document_parser.add_argument("--entity", required=True)
+    document_parser.add_argument("--period-start", required=True)
+    document_parser.add_argument("--period-end", required=True)
+    document_parser.add_argument("--notes", default=None)
+    document_parser.set_defaults(func=_record_document_command)
+
+    list_documents_parser = subparsers.add_parser(
+        "list-documents",
+        help="List source documents recorded in engagement state.",
+    )
+    list_documents_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    list_documents_parser.set_defaults(func=_list_documents_command)
+
     template_parser = subparsers.add_parser(
         "export-review-template",
         help="Export a JSON template for batch accountant exception review.",
@@ -918,11 +1087,26 @@ def build_parser() -> argparse.ArgumentParser:
     coa_review_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     coa_review_parser.set_defaults(func=_review_coa_command)
 
+    coa_record_parser = subparsers.add_parser(
+        "record-coa-account",
+        help="Record a structured chart-of-accounts account for review.",
+    )
+    coa_record_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    coa_record_parser.add_argument("--account-id", required=True)
+    coa_record_parser.add_argument("--code", required=True)
+    coa_record_parser.add_argument("--name", required=True)
+    coa_record_parser.add_argument("--type", required=True)
+    coa_record_parser.add_argument("--presentation-group", required=True)
+    coa_record_parser.add_argument("--opening-balance", required=True)
+    coa_record_parser.add_argument("--evidence-ref", action="append", default=[])
+    coa_record_parser.set_defaults(func=_record_coa_account_command)
+
     coa_approve_parser = subparsers.add_parser(
         "approve-coa",
         help="Record accountant approval for chart of accounts.",
     )
     coa_approve_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    coa_approve_parser.add_argument("--account-id", default=None)
     coa_approve_parser.add_argument("--approved-by", required=True)
     coa_approve_parser.add_argument("--rationale", required=True)
     coa_approve_parser.set_defaults(func=_approve_coa_command)
@@ -934,12 +1118,27 @@ def build_parser() -> argparse.ArgumentParser:
     adjustment_review_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     adjustment_review_parser.set_defaults(func=_review_adjustments_command)
 
+    record_adjustment_parser = subparsers.add_parser(
+        "record-adjustment",
+        help="Record a structured adjustment proposal for accountant review.",
+    )
+    record_adjustment_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    record_adjustment_parser.add_argument("--adjustment-id", required=True)
+    record_adjustment_parser.add_argument("--description", required=True)
+    record_adjustment_parser.add_argument("--debit-account", required=True)
+    record_adjustment_parser.add_argument("--credit-account", required=True)
+    record_adjustment_parser.add_argument("--amount", required=True)
+    record_adjustment_parser.add_argument("--date", required=True)
+    record_adjustment_parser.add_argument("--evidence-ref", action="append", default=[])
+    record_adjustment_parser.set_defaults(func=_record_adjustment_command)
+
     approve_adjustment_parser = subparsers.add_parser(
         "approve-adjustment",
         help="Approve a proposed adjustment or journal review item.",
     )
     approve_adjustment_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
-    approve_adjustment_parser.add_argument("--exception-id", required=True)
+    approve_adjustment_parser.add_argument("--exception-id", default=None)
+    approve_adjustment_parser.add_argument("--adjustment-id", default=None)
     approve_adjustment_parser.add_argument("--approved-by", required=True)
     approve_adjustment_parser.add_argument("--rationale", required=True)
     approve_adjustment_parser.set_defaults(func=_approve_adjustment_command)
@@ -949,7 +1148,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reject a proposed adjustment or journal review item.",
     )
     reject_adjustment_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
-    reject_adjustment_parser.add_argument("--exception-id", required=True)
+    reject_adjustment_parser.add_argument("--exception-id", default=None)
+    reject_adjustment_parser.add_argument("--adjustment-id", default=None)
     reject_adjustment_parser.add_argument("--approved-by", required=True)
     reject_adjustment_parser.add_argument("--rationale", required=True)
     reject_adjustment_parser.set_defaults(func=_reject_adjustment_command)
@@ -1014,6 +1214,17 @@ def build_parser() -> argparse.ArgumentParser:
     apply_pref_parser.add_argument("--approved-by", required=True)
     apply_pref_parser.add_argument("--rationale", required=True)
     apply_pref_parser.set_defaults(func=_apply_preferences_command)
+
+    output_parser = subparsers.add_parser(
+        "record-output",
+        help="Record a generated output artifact and verifier status.",
+    )
+    output_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    output_parser.add_argument("--output-id", required=True)
+    output_parser.add_argument("--file-path", required=True)
+    output_parser.add_argument("--artifact-type", required=True)
+    output_parser.add_argument("--verifier-status", required=True, choices=["passed", "failed", "not_run"])
+    output_parser.set_defaults(func=_record_output_command)
 
     manifest_parser = subparsers.add_parser(
         "export-release-manifest",
