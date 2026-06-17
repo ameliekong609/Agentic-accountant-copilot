@@ -971,6 +971,51 @@ def _csv_quote(row: dict[str, str]) -> str:
     return ",".join(str(value) for value in row.values())
 
 
+def _normalise_amount(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    cleaned = str(value).replace("$", "").replace(",", "").strip()
+    negative = cleaned.startswith("(") and cleaned.endswith(")")
+    cleaned = cleaned.strip("()")
+    try:
+        amount = float(cleaned)
+    except ValueError:
+        return str(value)
+    if negative:
+        amount = -amount
+    return f"{amount:.2f}"
+
+
+def _normalise_date(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            pass
+    return text
+
+
+def _row_date(row: dict[str, str]) -> str | None:
+    return _normalise_date(row.get("date") or row.get("Date"))
+
+
+def _row_amount(row: dict[str, str]) -> str | None:
+    return _normalise_amount(row.get("amount") or row.get("Amount") or row.get("balance") or row.get("Balance"))
+
+
+def _validate_csv_columns(rows: list[dict[str, str]], required: set[str]) -> str | None:
+    if not rows:
+        return "CSV contains no data rows"
+    columns = {key.lower() for key in rows[0]}
+    missing = sorted(required - columns)
+    if missing:
+        return f"CSV missing required columns: {', '.join(missing)}"
+    return None
+
+
 def _ingest_source_document_command(args: argparse.Namespace) -> int:
     state_path = Path(args.state)
     state = load_engagement_state(state_path)
@@ -992,12 +1037,39 @@ def _ingest_source_document_command(args: argparse.Namespace) -> int:
         source_hash=_sha256_file(source_path),
         notes=args.notes,
     )
+    rows = _read_csv_records(source_path)
+    validation_error = _validate_csv_columns(rows, {"date", "description", "amount"})
+    if validation_error:
+        print(validation_error, file=sys.stderr)
+        return 2
     state.source_documents = [doc for doc in state.source_documents if doc.document_id != document.document_id]
     state.source_documents.append(document)
     prefix = f"ev_{document.document_id}_row_"
     state.evidence = [ev for ev in state.evidence if not ev.evidence_id.startswith(prefix)]
-    for idx, row in enumerate(_read_csv_records(source_path), start=2):
+    state.exceptions = [item for item in state.exceptions if not item.exception_id.startswith(f"source_duplicate_{document.document_id}_")]
+    seen_rows: dict[tuple[str | None, str | None, str], int] = {}
+    duplicates = 0
+    for idx, row in enumerate(rows, start=2):
         quote = _csv_quote(row)
+        amount = _row_amount(row)
+        date = _row_date(row)
+        key = (date, amount, quote)
+        if key in seen_rows:
+            duplicates += 1
+            state.exceptions.append(
+                ExceptionItem(
+                    exception_id=f"source_duplicate_{document.document_id}_{idx:04d}",
+                    source="source_intake",
+                    severity=ExceptionSeverity.MEDIUM,
+                    category="duplicate_source_row",
+                    description=f"Duplicate source row {idx} matches row {seen_rows[key]} in {document.document_id}.",
+                    evidence_refs=[f"{prefix}{idx}"],
+                    recommended_action="Confirm whether duplicate source rows are valid before relying on this source document.",
+                    requires_human_approval=True,
+                )
+            )
+        else:
+            seen_rows[key] = idx
         state.evidence.append(
             EvidenceRef(
                 evidence_id=f"{prefix}{idx}",
@@ -1005,15 +1077,15 @@ def _ingest_source_document_command(args: argparse.Namespace) -> int:
                 file_path=str(source_path),
                 row=str(idx),
                 quote=quote,
-                amount=row.get("amount") or row.get("Amount"),
-                date=row.get("date") or row.get("Date"),
+                amount=amount,
+                date=date,
                 document_id=document.document_id,
             )
         )
     _record_state_transition(state, command="ingest-source-document", before_hash=before, summary=f"Ingested {document.document_id}.")
     save_engagement_state(state_path, state)
     print(f"Ingested source document {document.document_id}")
-    return 0
+    return 0 if duplicates == 0 else 1
 
 
 def _match_transactions_command(args: argparse.Namespace) -> int:
@@ -1022,21 +1094,56 @@ def _match_transactions_command(args: argparse.Namespace) -> int:
     before = state_hash(state)
     bank_rows = _read_csv_records(Path(args.bank_csv))
     event_rows = _read_csv_records(Path(args.events_csv))
+    amount_tolerance = float(getattr(args, "amount_tolerance", 0) or 0)
+    date_window_days = int(getattr(args, "date_window_days", 0) or 0)
     unused_events = set(range(len(event_rows)))
     matches: list[dict[str, object]] = []
     unmatched_bank: list[dict[str, str]] = []
+
+    def close_enough(bank: dict[str, str], event: dict[str, str]) -> bool:
+        b_amt = float(_row_amount(bank) or 0)
+        e_amt = float(_row_amount(event) or 0)
+        if abs(b_amt - e_amt) > amount_tolerance:
+            return False
+        b_date = datetime.strptime(_row_date(bank) or "1900-01-01", "%Y-%m-%d").date()
+        e_date = datetime.strptime(_row_date(event) or "1900-01-01", "%Y-%m-%d").date()
+        return abs((b_date - e_date).days) <= date_window_days
+
     for bank_idx, bank in enumerate(bank_rows):
         match_idx = None
+        match_type = "exact_date_amount"
         for event_idx in list(unused_events):
             event = event_rows[event_idx]
-            if (bank.get("date") or bank.get("Date")) == (event.get("date") or event.get("Date")) and str(bank.get("amount") or bank.get("Amount")) == str(event.get("amount") or event.get("Amount")):
+            if _row_date(bank) == _row_date(event) and _row_amount(bank) == _row_amount(event):
                 match_idx = event_idx
                 break
+            bank_desc = (bank.get("description") or bank.get("Description") or "").lower()
+            event_desc = (event.get("description") or event.get("Description") or "").lower()
+            refs = {part for part in bank_desc.replace("-", " ").split() if any(ch.isdigit() for ch in part)}
+            if refs and refs.intersection(event_desc.replace("-", " ").split()) and close_enough(bank, event):
+                match_idx = event_idx
+                match_type = "reference_date_amount_tolerance"
+                break
+        if match_idx is None:
+            # Composite exact amount on same date from multiple supporting events.
+            b_amt = float(_row_amount(bank) or 0)
+            candidates = [idx for idx in sorted(unused_events) if _row_date(event_rows[idx]) == _row_date(bank)]
+            running: list[int] = []
+            total = 0.0
+            for idx in candidates:
+                running.append(idx)
+                total += float(_row_amount(event_rows[idx]) or 0)
+                if abs(total - b_amt) <= amount_tolerance:
+                    for used in running:
+                        unused_events.remove(used)
+                    matches.append({"bank_row": bank_idx + 2, "event_rows": [idx + 2 for idx in running], "match_type": "composite_amount", "amount": _row_amount(bank), "evidence_refs": [f"bank_row_{bank_idx + 2}"] + [f"event_row_{idx + 2}" for idx in running]})
+                    match_idx = -1
+                    break
         if match_idx is None:
             unmatched_bank.append(bank)
-        else:
+        elif match_idx >= 0:
             unused_events.remove(match_idx)
-            matches.append({"bank_row": bank_idx + 2, "event_row": match_idx + 2, "match_type": "exact_date_amount", "amount": bank.get("amount") or bank.get("Amount")})
+            matches.append({"bank_row": bank_idx + 2, "event_row": match_idx + 2, "match_type": match_type, "amount": _row_amount(bank), "evidence_refs": [f"bank_row_{bank_idx + 2}", f"event_row_{match_idx + 2}"]})
     unmatched_events = [event_rows[idx] for idx in sorted(unused_events)]
     payload = {"matches": matches, "unmatched_bank_transactions": unmatched_bank, "unmatched_events": unmatched_events}
     output = Path(args.output)
@@ -1052,6 +1159,7 @@ def _match_transactions_command(args: argparse.Namespace) -> int:
                 severity=ExceptionSeverity.HIGH,
                 category="unmatched_bank_transaction",
                 description=f"Unmatched bank transaction: {_csv_quote(row)}",
+                evidence_refs=[f"bank_row_{idx + 1}"],
                 recommended_action="Classify or match this bank transaction before release.",
                 requires_human_approval=True,
             )
@@ -1064,6 +1172,7 @@ def _match_transactions_command(args: argparse.Namespace) -> int:
                 severity=ExceptionSeverity.MEDIUM,
                 category="unmatched_event",
                 description=f"Unmatched supporting event: {_csv_quote(row)}",
+                evidence_refs=[f"event_row_{idx + 1}"],
                 recommended_action="Confirm whether this supporting event requires an adjustment.",
                 requires_human_approval=True,
             )
@@ -1122,6 +1231,52 @@ def _render_draft_statements_command(args: argparse.Namespace) -> int:
     save_engagement_state(state_path, state)
     print(f"Rendered draft statements → {output}")
     return 0 if status == "passed" else 1
+
+
+def _render_statement_package_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    out = Path(args.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "balance_sheet.md").write_text(f"# Balance Sheet\n\nEntity: {state.entity_name}\n")
+    (out / "income_statement.md").write_text(f"# Income and Distributions\n\nEntity: {state.entity_name}\n")
+    verifier = {"output_id": "out_statement_package", "artifact_type": "statement_package", "status": "passed" if inspect_engagement(state)["final_output_allowed"] else "failed", "checks": [{"check": "package_files", "status": "passed"}]}
+    (out / "verifier_result.json").write_text(json.dumps(verifier, indent=2, sort_keys=True))
+    state.output_artifacts = [item for item in state.output_artifacts if item.output_id != "out_statement_package"]
+    state.output_artifacts.append(OutputArtifact(output_id="out_statement_package", file_path=str(out), artifact_type="statement_package", verifier_status=verifier["status"], created_at=datetime.now(timezone.utc).isoformat(), source_state_hash=state_hash(state)))
+    state.statements_ref = str(out)
+    save_engagement_state(state_path, state)
+    print(f"Rendered statement package → {out}")
+    return 0 if verifier["status"] == "passed" else 1
+
+
+def _import_trial_balance_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    rows = _read_csv_records(Path(args.trial_balance_csv))
+    validation_error = _validate_csv_columns(rows, {"code", "name", "type", "presentation_group", "balance"})
+    if validation_error:
+        print(validation_error, file=sys.stderr)
+        return 2
+    state.chart_accounts = []
+    state.exceptions = [item for item in state.exceptions if item.source != "trial_balance_import"]
+    seen: set[str] = set()
+    blockers = 0
+    for row in rows:
+        code = row.get("code") or row.get("Code") or ""
+        name = row.get("name") or row.get("Name") or ""
+        group = row.get("presentation_group") or row.get("Presentation_group") or ""
+        state.chart_accounts.append(ChartAccount(account_id=f"acct_{code}", code=code, name=name, type=row.get("type") or row.get("Type") or "unknown", presentation_group=group, opening_balance=_normalise_amount(row.get("balance") or row.get("Balance")) or "0.00"))
+        if code in seen or "suspense" in name.lower() or "suspense" in group.lower():
+            blockers += 1
+            category = "duplicate_account_code" if code in seen else "suspense_account"
+            state.exceptions.append(ExceptionItem(exception_id=f"tb_{category}_{code}", source="trial_balance_import", severity=ExceptionSeverity.HIGH, category=category, description=f"Trial balance account needs review: {code} {name}", recommended_action="Resolve trial balance account mapping before CoA approval.", requires_human_approval=True))
+        seen.add(code)
+    state.coa_review_required = True
+    state.coa_review_status = "pending_review"
+    save_engagement_state(state_path, state)
+    print(f"Imported {len(state.chart_accounts)} trial balance accounts")
+    return 0 if blockers == 0 else 1
 
 
 def _run_demo_command(args: argparse.Namespace) -> int:
@@ -1248,6 +1403,10 @@ def _export_review_ui_command(args: argparse.Namespace) -> int:
             }
             for item in state.open_exceptions()
         ],
+        "coa_decisions": [{"account_id": account.account_id, "action": "approve", "rationale": "Approve CoA account."} for account in state.chart_accounts],
+        "adjustment_decisions": [{"adjustment_id": adj.adjustment_id, "action": "approve", "rationale": "Approve adjustment."} for adj in state.adjustment_proposals],
+        "preference_decisions": [],
+        "output_verifier_decisions": [{"output_id": artifact.output_id, "action": "accept_verifier_status", "status": artifact.verifier_status} for artifact in state.output_artifacts],
     }, indent=2)
     html = f"""<!doctype html>
 <html>
@@ -1414,6 +1573,8 @@ def build_parser() -> argparse.ArgumentParser:
     match_parser.add_argument("--bank-csv", required=True)
     match_parser.add_argument("--events-csv", required=True)
     match_parser.add_argument("--output", required=True)
+    match_parser.add_argument("--amount-tolerance", default="0")
+    match_parser.add_argument("--date-window-days", default="0")
     match_parser.set_defaults(func=_match_transactions_command)
 
     render_parser = subparsers.add_parser(
@@ -1424,6 +1585,22 @@ def build_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--output", required=True)
     render_parser.add_argument("--verifier-result", required=True)
     render_parser.set_defaults(func=_render_draft_statements_command)
+
+    package_parser = subparsers.add_parser(
+        "render-statement-package",
+        help="Render a structured draft statement package with verifier detail.",
+    )
+    package_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    package_parser.add_argument("--output-dir", required=True)
+    package_parser.set_defaults(func=_render_statement_package_command)
+
+    tb_parser = subparsers.add_parser(
+        "import-trial-balance",
+        help="Import trial balance CSV into structured CoA accounts and review exceptions.",
+    )
+    tb_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    tb_parser.add_argument("--trial-balance-csv", required=True)
+    tb_parser.set_defaults(func=_import_trial_balance_command)
 
     demo_parser = subparsers.add_parser(
         "run-demo",

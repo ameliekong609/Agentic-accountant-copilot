@@ -18,3 +18,9 @@ jobs:
         run: PYTHONPATH=src python3.11 -m pytest -q
       - name: Compile check
         run: python3.11 -m compileall -q src tests
+      - name: Demo smoke test
+        run: PYTHONPATH=src python3.11 -m accountant_copilot.cli run-demo --output-dir /tmp/accountant-copilot-demo
+      - name: Terminology scan
+        run: '! grep -R -n -E "V2|v2|legacy" README.md docs'
+      - name: Command help snapshot check
+        run: PYTHONPATH=src python3.11 -m accountant_copilot.cli --help | grep -E "ingest-source-document|match-transactions|import-trial-balance|render-statement-package"

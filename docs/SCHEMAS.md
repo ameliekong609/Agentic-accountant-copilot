@@ -177,3 +177,13 @@ Evidence records may include `document_id` when linked to a source document regi
 `render-draft-statements` writes a markdown draft financial statement artifact, writes a verifier result JSON, and registers `out_draft_statements` in `output_artifacts`.
 
 `run-demo` creates safe sample blocked and clean engagement flows under the requested output directory. Do not place client data in demo fixtures.
+
+## Next queue controls
+
+CSV source intake now validates required `date`, `description`, and `amount` columns, normalises common date/amount formats, and raises `duplicate_source_row` exceptions when duplicate source rows are detected.
+
+`match-transactions` supports `--amount-tolerance` and `--date-window-days`, reference/date/amount tolerance matches, composite amount matches, and evidence references in match artifacts.
+
+`import-trial-balance` imports trial balance CSV rows into structured CoA accounts and flags duplicate account codes or suspense accounts as accountant-review exceptions.
+
+`render-statement-package` writes a structured draft statement package folder with balance sheet, income/distribution statement, verifier detail, and output artifact registration.

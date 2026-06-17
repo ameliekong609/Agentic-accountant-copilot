@@ -301,3 +301,25 @@ pytest
 - `docs/AGENT_ROLES.md`
 - `docs/CONTROLS_AND_POLICIES.md`
 - `docs/SCHEMAS.md`
+
+## Next queue controls
+
+Additional build commands:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli match-transactions \
+  --state outputs/engagement_state.json \
+  --bank-csv source/bank.csv \
+  --events-csv source/events.csv \
+  --output outputs/matches.json \
+  --amount-tolerance 0.02 \
+  --date-window-days 2
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli import-trial-balance \
+  --state outputs/engagement_state.json \
+  --trial-balance-csv source/trial_balance.csv
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli render-statement-package \
+  --state outputs/engagement_state.json \
+  --output-dir outputs/statement_package
+```
