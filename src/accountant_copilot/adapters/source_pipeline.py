@@ -1,8 +1,8 @@
-"""Import exceptions from the legacy V2 pipeline outputs.
+"""Import exceptions from source pipeline control outputs.
 
-This adapter is intentionally one-way: it translates useful V2 control signals
-into the new Agentic Accountant Copilot exception queue. It does not preserve the
-old step-by-step workflow as the product architecture.
+This adapter is intentionally one-way: it translates deterministic matching and
+journal verifier control signals into the Agentic Accountant Copilot exception
+queue without exposing implementation-version language to users.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def _money(value: Any) -> str:
         return str(value)
 
 
-def _step6_severity(check: str) -> ExceptionSeverity:
+def _verifier_severity(check: str) -> ExceptionSeverity:
     if check in {"per_entry_balanced", "overall_balanced", "matches_have_entries"}:
         return ExceptionSeverity.CRITICAL
     if "reconcile" in check or "reconciles" in check:
@@ -34,9 +34,9 @@ def _step6_severity(check: str) -> ExceptionSeverity:
     return ExceptionSeverity.MEDIUM
 
 
-def _import_unmatched_bank(step5: dict[str, Any]) -> list[ExceptionItem]:
+def _import_unmatched_bank(matching_payload: dict[str, Any]) -> list[ExceptionItem]:
     exceptions: list[ExceptionItem] = []
-    for idx, item in enumerate(step5.get("unmatched_bank", []), start=1):
+    for idx, item in enumerate(matching_payload.get("unmatched_bank", []), start=1):
         classification = item.get("user_classification")
         reason = item.get("classification_reason")
         severity = ExceptionSeverity.MEDIUM if classification else ExceptionSeverity.HIGH
@@ -46,18 +46,18 @@ def _import_unmatched_bank(step5: dict[str, Any]) -> list[ExceptionItem]:
             f"amount {_money(item.get('amount'))} {item.get('direction', '')}".strip(),
         ]
         if classification:
-            description_parts.append(f"V2 classification: {classification}.")
+            description_parts.append(f"Proposed classification: {classification}.")
         if reason:
             description_parts.append(str(reason))
         exceptions.append(
             ExceptionItem(
-                exception_id=f"v2_step5_unmatched_bank_{idx:04d}",
-                source="v2.step5.unmatched_bank",
+                exception_id=f"source_matching_unmatched_bank_{idx:04d}",
+                source="source_pipeline.matching.unmatched_bank",
                 severity=severity,
-                category="v2_unmatched_bank_transaction",
+                category="unmatched_bank_transaction",
                 description=" — ".join(part for part in description_parts if part),
                 evidence_refs=[
-                    f"step5.unmatched_bank[{idx - 1}]",
+                    f"matching.unmatched_bank[{idx - 1}]",
                     f"bank:{item.get('statement_id', '?')}:{item.get('row_index', '?')}",
                 ],
                 recommended_action=(
@@ -70,9 +70,9 @@ def _import_unmatched_bank(step5: dict[str, Any]) -> list[ExceptionItem]:
     return exceptions
 
 
-def _import_unmatched_events(step5: dict[str, Any]) -> list[ExceptionItem]:
+def _import_unmatched_events(matching_payload: dict[str, Any]) -> list[ExceptionItem]:
     exceptions: list[ExceptionItem] = []
-    for idx, item in enumerate(step5.get("unmatched_events", []), start=1):
+    for idx, item in enumerate(matching_payload.get("unmatched_events", []), start=1):
         classification = item.get("user_classification")
         reason = item.get("classification_reason")
         severity = ExceptionSeverity.MEDIUM if classification else ExceptionSeverity.HIGH
@@ -84,17 +84,17 @@ def _import_unmatched_events(step5: dict[str, Any]) -> list[ExceptionItem]:
         if item.get("source_file"):
             description_parts.append(f"source file: {item['source_file']}.")
         if classification:
-            description_parts.append(f"V2 classification: {classification}.")
+            description_parts.append(f"Proposed classification: {classification}.")
         if reason:
             description_parts.append(str(reason))
         exceptions.append(
             ExceptionItem(
-                exception_id=f"v2_step5_unmatched_event_{idx:04d}",
-                source="v2.step5.unmatched_events",
+                exception_id=f"source_matching_unmatched_event_{idx:04d}",
+                source="source_pipeline.matching.unmatched_events",
                 severity=severity,
-                category="v2_unmatched_event",
+                category="unmatched_event",
                 description=" — ".join(part for part in description_parts if part),
-                evidence_refs=[f"step5.unmatched_events[{idx - 1}]", item.get("event_id", "")],
+                evidence_refs=[f"matching.unmatched_events[{idx - 1}]", item.get("event_id", "")],
                 recommended_action=(
                     "Review whether this event is an accrual, out-of-period item, "
                     "wrong-entity document, or missing bank movement."
@@ -105,20 +105,20 @@ def _import_unmatched_events(step5: dict[str, Any]) -> list[ExceptionItem]:
     return exceptions
 
 
-def _import_step6_findings(step6: dict[str, Any]) -> list[ExceptionItem]:
+def _import_verifier_findings(journal_payload: dict[str, Any]) -> list[ExceptionItem]:
     exceptions: list[ExceptionItem] = []
-    for idx, finding in enumerate(step6.get("verifier_findings", []), start=1):
+    for idx, finding in enumerate(journal_payload.get("verifier_findings", []), start=1):
         check = finding.get("check", "unknown")
         row_name = finding.get("row_name", "unknown row")
         detail = finding.get("detail", "")
         exceptions.append(
             ExceptionItem(
-                exception_id=f"v2_step6_finding_{idx:04d}",
-                source="v2.step6.verifier_findings",
-                severity=_step6_severity(check),
-                category=f"v2_step6_{check}",
-                description=f"Step 6 verifier finding [{check}] {row_name}: {detail}",
-                evidence_refs=[finding.get("file", "step6"), f"step6.verifier_findings[{idx - 1}]"],
+                exception_id=f"source_journal_finding_{idx:04d}",
+                source="source_pipeline.journal.verifier_findings",
+                severity=_verifier_severity(check),
+                category=f"journal_{check}",
+                description=f"Journal verifier finding [{check}] {row_name}: {detail}",
+                evidence_refs=[finding.get("file", "journal"), f"journal.verifier_findings[{idx - 1}]"],
                 recommended_action=(
                     "Resolve this journal/control finding or record an explicit "
                     "accountant-approved accepted-risk decision before final release."
@@ -129,12 +129,12 @@ def _import_step6_findings(step6: dict[str, Any]) -> list[ExceptionItem]:
     return exceptions
 
 
-def import_v2_exceptions(step5_path: Path, step6_path: Path) -> list[ExceptionItem]:
-    """Import Step 5/Step 6 V2 issues into the new exception queue."""
-    step5 = _load_json(step5_path)
-    step6 = _load_json(step6_path)
+def import_source_pipeline_exceptions(matching_path: Path, journal_path: Path) -> list[ExceptionItem]:
+    """Import source pipeline issues into the exception queue."""
+    matching_payload = _load_json(matching_path)
+    journal_payload = _load_json(journal_path)
     exceptions: list[ExceptionItem] = []
-    exceptions.extend(_import_unmatched_bank(step5))
-    exceptions.extend(_import_unmatched_events(step5))
-    exceptions.extend(_import_step6_findings(step6))
+    exceptions.extend(_import_unmatched_bank(matching_payload))
+    exceptions.extend(_import_unmatched_events(matching_payload))
+    exceptions.extend(_import_verifier_findings(journal_payload))
     return exceptions

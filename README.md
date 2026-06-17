@@ -26,7 +26,7 @@ Agentic planning + deterministic controls + accountant approval + preference mem
 src/accountant_copilot/
   orchestrator/      Engagement planning and readiness gates
   agents/            Agent role interfaces and future implementations
-  tools/             Deterministic tools and legacy/V2 adapters
+  tools/             Deterministic tools and source pipeline adapters
   state/             Engagement state, exceptions, decisions, preferences
 ```
 
@@ -52,12 +52,30 @@ Exit code policy:
 - `0` — final output is allowed by current readiness gate.
 - `1` — final output is blocked by open critical/high exceptions or missing approvals.
 
-Import legacy/reference V2 Step 5/6 issues into a new engagement state exception queue:
+Review open exceptions and record accountant decisions:
 
 ```bash
-PYTHONPATH=src python3.11 -m accountant_copilot.cli import-v2-exceptions \
-  --step5 /path/to/v2/outputs/step5.json \
-  --step6 /path/to/v2/outputs/step6.json \
+PYTHONPATH=src python3.11 -m accountant_copilot.cli review-exceptions \
+  --state outputs/engagement_state.json
+```
+
+Resolve or accept an exception with an approved accountant decision:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli review-exceptions \
+  --state outputs/engagement_state.json \
+  --exception-id exc_high_bank \
+  --action resolved \
+  --rationale "Matched to approved supporting evidence." \
+  --approved-by "Reviewer Name"
+```
+
+Import source pipeline control issues into a new engagement state exception queue:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli import-source-exceptions \
+  --matching /path/to/matching.json \
+  --journal /path/to/journal.json \
   --output outputs/engagement_state.json \
   --engagement-id xyz_fy2025 \
   --entity-name "XYZ Australia Financial Trust" \
@@ -93,4 +111,3 @@ pytest
 - `docs/ARCHITECTURE.md`
 - `docs/AGENT_ROLES.md`
 - `docs/CONTROLS_AND_POLICIES.md`
-- `docs/MIGRATION_FROM_V2.md`

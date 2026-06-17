@@ -1,1 +1,1 @@
-"""Adapters for importing legacy/reference pipeline artefacts."""
+"""Adapters for importing source pipeline artefacts."""
