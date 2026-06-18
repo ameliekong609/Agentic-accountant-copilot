@@ -239,3 +239,11 @@ Review packets now include `journal_tb_impact.md`, summarising CoA status, linke
 `render-draft-statements-from-tb` renders internal-review-only draft statements from the post-journal TB and statement-line mapping. It carries control references and refuses clean output when TB or mapping findings remain.
 
 `inspect-statement-chain-readiness` checks the reviewed-journal-to-draft-statement artifact chain and reports missing artifacts plus release blockers such as unapproved CoA, unresolved journals, or missing final sign-off.
+
+`export-draft-statement-review-template` and `apply-draft-statement-review` provide accountant approval/rejection for internal-review-only draft statements. Approval requires reviewer, rationale, clean draft findings, and a matching draft artifact hash.
+
+`build-release-candidate-package` packages the reviewed journals, post-journal TB, statement mapping, and draft statements after draft approval, recording artifact hashes and source state hash in `release_candidate_manifest.json`.
+
+`verify-release-candidate` checks release candidate hashes and reports missing artifacts or `hash_mismatch` findings when files are changed after packaging.
+
+`export-final-release-manifest` ties final release to a verified release candidate plus final sign-off, and blocks stale-state or tampered-artifact release.

@@ -481,6 +481,30 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli inspect-statement-chain-read
   --state outputs/engagement_state.json \
   --artifact-dir outputs
 
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-draft-statement-review-template \
+  --state outputs/engagement_state.json \
+  --draft outputs/draft_statements/draft_statements.json \
+  --output outputs/draft_statement_review_template.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-draft-statement-review \
+  --state outputs/engagement_state.json \
+  --decision outputs/draft_statement_review_template.json \
+  --draft outputs/draft_statements/draft_statements.json \
+  --output outputs/applied_draft_statement_review.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli build-release-candidate-package \
+  --state outputs/engagement_state.json \
+  --artifact-dir outputs \
+  --output-dir outputs/release_candidate
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli verify-release-candidate \
+  --manifest outputs/release_candidate/release_candidate_manifest.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-final-release-manifest \
+  --state outputs/engagement_state.json \
+  --release-candidate outputs/release_candidate/release_candidate_manifest.json \
+  --output outputs/final_release_manifest.json
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \
   --facts outputs/bank_statement_facts.json \
   --output outputs/bank_continuity.md

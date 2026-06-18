@@ -30,7 +30,7 @@ def test_review_packet_journal_tb_section_links_decision_preview_and_export_arti
     state.adjustment_proposals.append(AdjustmentProposal(adjustment_id="journal_approved", description="Approved invoice", debit_account="acct_600", credit_account="acct_100", amount="110.00", date="2025-06-30", status="approved", decision_id="decision_1"))
     state_path = tmp_path / "engagement_state.json"
     state_path.write_text(state.model_dump_json())
-    for filename in ["journal_decisions_template.json", "applied_journal_decisions.json", "tb_impact_preview.md", "post_journal_trial_balance.md", "statement_line_mapping.md"]:
+    for filename in ["journal_decisions_template.json", "applied_journal_decisions.json", "tb_impact_preview.md", "post_journal_trial_balance.md", "statement_line_mapping.md", "draft_statement_review_template.json", "applied_draft_statement_review.json", "final_release_manifest.json"]:
         (tmp_path / filename).write_text("fixture")
     draft_dir = tmp_path / "draft_statements"
     draft_dir.mkdir()
@@ -38,6 +38,9 @@ def test_review_packet_journal_tb_section_links_decision_preview_and_export_arti
     reviewed_dir = tmp_path / "reviewed_journals"
     reviewed_dir.mkdir()
     (reviewed_dir / "reviewed_journals.md").write_text("fixture")
+    release_dir = tmp_path / "release_candidate"
+    release_dir.mkdir()
+    (release_dir / "release_candidate_manifest.json").write_text("fixture")
 
     result = run_cli("export-review-packet", "--state", str(state_path), "--output-dir", str(tmp_path / "review_packet"))
 
@@ -50,4 +53,10 @@ def test_review_packet_journal_tb_section_links_decision_preview_and_export_arti
     assert "Post-journal trial balance" in impact
     assert "Statement line mapping" in impact
     assert "Draft statements" in impact
+    assert "Draft statement review template" in impact
+    assert "Applied draft statement review" in impact
+    assert "Release candidate manifest" in impact
+    assert "Final release manifest" in impact
+    assert "Release workflow commands" in impact
+    assert "build-release-candidate-package" in impact
     assert "Approved journals: 1" in impact

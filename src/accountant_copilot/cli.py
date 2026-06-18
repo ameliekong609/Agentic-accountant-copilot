@@ -2499,6 +2499,163 @@ def _inspect_statement_chain_readiness_command(args: argparse.Namespace) -> int:
     return 0 if ready else 1
 
 
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _draft_statement_review_decision(state: EngagementState) -> AccountantDecision | None:
+    return next((decision for decision in reversed(state.decisions) if decision.selected_option == "approve_draft_statements" and decision.status == DecisionStatus.APPROVED), None)
+
+
+def _export_draft_statement_review_template_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    draft_path = Path(args.draft)
+    draft = json.loads(draft_path.read_text())
+    payload = {
+        "engagement_id": state.engagement_id,
+        "draft_artifact": str(draft_path),
+        "draft_sha256": _file_sha256(draft_path),
+        "draft_status": draft.get("status"),
+        "draft_findings": len(draft.get("findings", [])),
+        "decision": {"action": "", "approved_by": "", "rationale": ""},
+    }
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported draft statement review template → {output}")
+    return 0
+
+
+def _apply_draft_statement_review_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    draft_path = Path(args.draft)
+    draft = json.loads(draft_path.read_text())
+    payload = json.loads(Path(args.decision).read_text())
+    if payload.get("engagement_id") not in {None, state.engagement_id}:
+        _usage_error("Draft statement review engagement_id does not match state")
+    if payload.get("draft_sha256") and payload.get("draft_sha256") != _file_sha256(draft_path):
+        _usage_error("Draft statement artifact hash does not match review template")
+    decision_payload = payload.get("decision", {})
+    action = decision_payload.get("action")
+    if not action:
+        applied = {"engagement_id": state.engagement_id, "draft_status": draft.get("status"), "summary": {"applied": 0}}
+    else:
+        if action not in {"approve", "reject"}:
+            _usage_error(f"invalid draft statement review action: {action}")
+        if not decision_payload.get("approved_by"):
+            _usage_error("draft statement review requires approved_by")
+        if not decision_payload.get("rationale"):
+            _usage_error("draft statement review requires rationale")
+        if action == "approve" and draft.get("findings"):
+            _usage_error("Cannot approve draft statements while draft findings remain")
+        selected = "approve_draft_statements" if action == "approve" else "reject_draft_statements"
+        decision = AccountantDecision(
+            decision_id=f"decision_{selected}_{len(state.decisions) + 1:04d}",
+            question="Approve internal-review draft statements?",
+            selected_option=selected,
+            rationale=decision_payload["rationale"],
+            status=DecisionStatus.APPROVED,
+            approved_by=decision_payload["approved_by"],
+            evidence_refs=[str(draft_path), payload.get("draft_sha256", _file_sha256(draft_path))],
+        )
+        state.decisions.append(decision)
+        save_engagement_state(state_path, state)
+        applied = {"engagement_id": state.engagement_id, "draft_status": "accountant_approved_draft" if action == "approve" else "draft_rejected", "decision_id": decision.decision_id, "summary": {"applied": 1}}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(applied, indent=2, sort_keys=True))
+    print(f"Applied draft statement review → {output}")
+    return 0 if applied["summary"]["applied"] else 1
+
+
+def _release_candidate_artifact_paths(artifact_dir: Path) -> list[Path]:
+    return [
+        artifact_dir / "reviewed_journals" / "reviewed_journals.json",
+        artifact_dir / "reviewed_journals" / "reviewed_journals.md",
+        artifact_dir / "post_journal_trial_balance.json",
+        artifact_dir / "post_journal_trial_balance.md",
+        artifact_dir / "statement_line_mapping.json",
+        artifact_dir / "statement_line_mapping.md",
+        artifact_dir / "draft_statements" / "draft_statements.json",
+        artifact_dir / "draft_statements" / "draft_statements.md",
+    ]
+
+
+def _build_release_candidate_package_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    artifact_dir = Path(args.artifact_dir)
+    readiness = {"missing_artifacts": [], "blockers": []}
+    for path in _release_candidate_artifact_paths(artifact_dir):
+        if not path.exists():
+            readiness["missing_artifacts"].append(str(path.relative_to(artifact_dir)))
+    if state.coa_review_status != "approved":
+        readiness["blockers"].append("CoA is not approved")
+    if state.adjustment_proposals and any(p.status != "approved" for p in state.adjustment_proposals):
+        readiness["blockers"].append("Journal proposals remain pending/rejected")
+    if not _draft_statement_review_decision(state):
+        readiness["blockers"].append("Draft statements are not accountant-approved")
+    if readiness["missing_artifacts"] or readiness["blockers"]:
+        print(json.dumps(readiness, indent=2, sort_keys=True), file=sys.stderr)
+        return 1
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = {}
+    for path in _release_candidate_artifact_paths(artifact_dir):
+        rel = str(path.relative_to(artifact_dir))
+        artifacts[rel] = {"path": str(path), "sha256": _file_sha256(path)}
+    draft_decision = _draft_statement_review_decision(state)
+    manifest = {"engagement_id": state.engagement_id, "status": "release_candidate", "source_state_hash": state_hash(state), "created_at": datetime.now(timezone.utc).isoformat(), "artifacts": artifacts, "draft_decision_id": draft_decision.decision_id if draft_decision else None}
+    (output_dir / "release_candidate_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    (output_dir / "README.md").write_text("# Release Candidate Package\n\nStatus: release_candidate\n\n" + "\n".join(f"- {name}: {info['sha256']}" for name, info in artifacts.items()) + "\n")
+    print(f"Built release candidate package → {output_dir}")
+    return 0
+
+
+def _verify_release_candidate_command(args: argparse.Namespace) -> int:
+    manifest_path = Path(args.manifest)
+    manifest = json.loads(manifest_path.read_text())
+    findings = []
+    for name, info in manifest.get("artifacts", {}).items():
+        path = Path(info["path"])
+        if not path.exists():
+            findings.append({"category": "missing_artifact", "artifact": name})
+            continue
+        actual = _file_sha256(path)
+        if actual != info.get("sha256"):
+            findings.append({"category": "hash_mismatch", "artifact": name, "expected": info.get("sha256"), "actual": actual})
+    payload = {"manifest": str(manifest_path), "verified": not findings, "findings": findings}
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0 if not findings else 1
+
+
+def _export_final_release_manifest_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    signoff = _final_signoff_decision(state)
+    if signoff is None:
+        print("Cannot export final release without final sign-off", file=sys.stderr)
+        return 1
+    manifest_path = Path(args.release_candidate)
+    manifest = json.loads(manifest_path.read_text())
+    if manifest.get("source_state_hash") != state_hash(state):
+        print("Cannot export final release: release candidate state hash is stale", file=sys.stderr)
+        return 1
+    verify_payload = []
+    for name, info in manifest.get("artifacts", {}).items():
+        path = Path(info["path"])
+        if not path.exists() or _file_sha256(path) != info.get("sha256"):
+            verify_payload.append(name)
+    if verify_payload:
+        print(f"Cannot export final release: release candidate verification failed for {verify_payload}", file=sys.stderr)
+        return 1
+    payload = {"engagement_id": state.engagement_id, "status": "final_release_manifest", "release_candidate_manifest": str(manifest_path), "release_candidate_sha256": _file_sha256(manifest_path), "final_signoff_decision_id": signoff.decision_id, "source_state_hash": state_hash(state), "created_at": datetime.now(timezone.utc).isoformat()}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported final release manifest → {output}")
+    return 0
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -3041,6 +3198,10 @@ def _format_journal_tb_impact(state: EngagementState, state_path: Path) -> str:
         ("Post-journal trial balance", "post_journal_trial_balance.md"),
         ("Statement line mapping", "statement_line_mapping.md"),
         ("Draft statements", "draft_statements/draft_statements.md"),
+        ("Draft statement review template", "draft_statement_review_template.json"),
+        ("Applied draft statement review", "applied_draft_statement_review.json"),
+        ("Release candidate manifest", "release_candidate/release_candidate_manifest.json"),
+        ("Final release manifest", "final_release_manifest.json"),
     ]
     lines.append("## Linked artifacts")
     found = False
@@ -3070,6 +3231,15 @@ def _format_journal_tb_impact(state: EngagementState, state_path: Path) -> str:
     else:
         lines.append("- No journal proposals recorded.")
     lines.extend(["", "## Accountant review required", "- Approve or reject each CoA account and journal proposal before TB/final statement reliance.", "- Resolve any `pending_review_offset` side before final journal posting."])
+    lines.extend([
+        "",
+        "## Release workflow commands",
+        "- `export-draft-statement-review-template` → create accountant approval template for draft statements.",
+        "- `apply-draft-statement-review` → persist accountant draft approval/rejection with rationale.",
+        "- `build-release-candidate-package` → package hashed reviewed artifacts after draft approval.",
+        "- `verify-release-candidate` → detect missing or tampered release candidate artifacts.",
+        "- `export-final-release-manifest` → create final manifest tied to verified release candidate and final sign-off.",
+    ])
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -4575,6 +4745,50 @@ def build_parser() -> argparse.ArgumentParser:
     statement_chain_parser.add_argument("--artifact-dir", default="outputs")
     statement_chain_parser.add_argument("--json", action="store_true")
     statement_chain_parser.set_defaults(func=_inspect_statement_chain_readiness_command)
+
+    draft_review_template_parser = subparsers.add_parser(
+        "export-draft-statement-review-template",
+        help="Export accountant review template for internal draft statements.",
+    )
+    draft_review_template_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    draft_review_template_parser.add_argument("--draft", required=True)
+    draft_review_template_parser.add_argument("--output", required=True)
+    draft_review_template_parser.set_defaults(func=_export_draft_statement_review_template_command)
+
+    draft_review_apply_parser = subparsers.add_parser(
+        "apply-draft-statement-review",
+        help="Apply accountant approval/rejection for draft statements.",
+    )
+    draft_review_apply_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    draft_review_apply_parser.add_argument("--decision", required=True)
+    draft_review_apply_parser.add_argument("--draft", required=True)
+    draft_review_apply_parser.add_argument("--output", required=True)
+    draft_review_apply_parser.set_defaults(func=_apply_draft_statement_review_command)
+
+    release_candidate_parser = subparsers.add_parser(
+        "build-release-candidate-package",
+        help="Build release candidate package with hashed reviewed artifacts.",
+    )
+    release_candidate_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    release_candidate_parser.add_argument("--artifact-dir", default="outputs")
+    release_candidate_parser.add_argument("--output-dir", default="outputs/release_candidate")
+    release_candidate_parser.set_defaults(func=_build_release_candidate_package_command)
+
+    verify_release_candidate_parser = subparsers.add_parser(
+        "verify-release-candidate",
+        help="Verify release candidate artifact hashes.",
+    )
+    verify_release_candidate_parser.add_argument("--manifest", required=True)
+    verify_release_candidate_parser.set_defaults(func=_verify_release_candidate_command)
+
+    final_release_parser = subparsers.add_parser(
+        "export-final-release-manifest",
+        help="Export final release manifest tied to a verified release candidate.",
+    )
+    final_release_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    final_release_parser.add_argument("--release-candidate", required=True)
+    final_release_parser.add_argument("--output", required=True)
+    final_release_parser.set_defaults(func=_export_final_release_manifest_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",
