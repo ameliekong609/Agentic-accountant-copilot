@@ -121,6 +121,28 @@ def test_document_inventory_rows_are_reviewable_inline(tmp_path: Path):
     }]
 
 
+def test_extraction_fact_summary_rows_show_business_output(tmp_path: Path):
+    from accountant_copilot.review_app import _extraction_fact_summary_rows
+
+    (tmp_path / "bank_statement_facts.json").write_text(json.dumps({"facts": [{}, {}], "findings": [{}]}))
+    (tmp_path / "bank_transactions.json").write_text(json.dumps({"transactions": [{}, {}, {}], "findings": []}))
+
+    rows = _extraction_fact_summary_rows(tmp_path)
+
+    assert rows[0] == {"output": "Bank statement facts", "records": 2, "review_items": 1}
+    assert rows[1] == {"output": "Bank transactions", "records": 3, "review_items": 0}
+
+
+def test_extract_tab_renders_extraction_output_inline_before_matching():
+    source = APP.read_text()
+    extract_block = source.split("with extract_tab:", 1)[1].split("with match_tab:", 1)[0]
+    match_block = source.split("with match_tab:", 1)[1].split("with coa_tab:", 1)[0]
+
+    assert "_render_extraction_fact_summary(artifact_dir)" in extract_block
+    assert "_render_source_extraction_review(artifact_dir)" in extract_block
+    assert "_render_source_extraction_review(artifact_dir)" not in match_block
+
+
 def test_dashboard_summary_surfaces_tb_draft_and_release_status(tmp_path: Path):
     from accountant_copilot.review_app import _dashboard_summary
 
@@ -300,7 +322,7 @@ def test_workflow_steps_embed_outputs_and_review_actions():
     by_label = {step["label"]: step for step in steps}
 
     assert by_label["Process documents and build inventory"]["user_output"] == "Document inventory is ready for review."
-    assert by_label["Extract accounting facts"]["review_action"] == "Review source extraction issues now, before matching."
+    assert by_label["Extract accounting facts"]["review_action"] == "Extracted facts are ready. Review the items below before matching."
     assert by_label["Build CoA and mappings"]["review_action"] == "Review and approve CoA/mapping suggestions now."
     assert by_label["Build reviewed TB and draft statements"]["review_action"] == "Review the trial balance and draft statements now."
     assert by_label["Build release candidate"]["review_action"] == "Review release package blockers now."

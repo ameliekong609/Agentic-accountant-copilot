@@ -193,7 +193,7 @@ def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[
             "label": "Extract accounting facts",
             "description": "Extract bank, invoice, distribution/tax, and broker trade facts from source evidence.",
             "user_output": "Accounting facts and extraction issues are ready.",
-            "review_action": "Review source extraction issues now, before matching.",
+            "review_action": "Extracted facts are ready. Review the items below before matching.",
             "command": [
                 ["export-bank-statement-facts", "--state", state_path, "--output", f"{artifact_dir}/bank_statement_facts.md"],
                 ["export-bank-transactions", "--state", state_path, "--output", f"{artifact_dir}/bank_transactions.md"],
@@ -473,6 +473,36 @@ def _coa_review_rows(workbench: dict[str, Any]) -> list[dict[str, str]]:
     return rows
 
 
+def _extraction_fact_summary_rows(artifact_dir: Path) -> list[dict[str, int | str]]:
+    outputs = [
+        ("Bank statement facts", "bank_statement_facts.json", "facts"),
+        ("Bank transactions", "bank_transactions.json", "transactions"),
+        ("Invoice facts", "invoice_facts.json", "facts"),
+        ("Distribution/tax facts", "distribution_tax_facts.json", "facts"),
+        ("Broker trade facts", "broker_trade_facts.json", "facts"),
+    ]
+    rows: list[dict[str, int | str]] = []
+    for label, filename, record_key in outputs:
+        path = artifact_dir / filename
+        if not path.exists():
+            continue
+        data = _load_json(path, {})
+        records = data.get(record_key, []) if isinstance(data, dict) else []
+        findings = data.get("findings", []) if isinstance(data, dict) else []
+        rows.append({"output": label, "records": len(records) if isinstance(records, list) else 0, "review_items": len(findings) if isinstance(findings, list) else 0})
+    return rows
+
+
+def _render_extraction_fact_summary(artifact_dir: Path) -> None:
+    rows = _extraction_fact_summary_rows(artifact_dir)
+    if not rows:
+        st.info("Extracted facts will appear here after this step runs.")
+        return
+    st.markdown("**Extracted facts**")
+    st.write("Review these extracted record counts before matching. Any review items are listed below.")
+    st.dataframe(rows, use_container_width=True)
+
+
 def _render_source_extraction_review(artifact_dir: Path) -> None:
     st.header("Source Extraction Review")
     st.write("Incomplete means a document was detected but some fields are missing, uncertain, or routed to the wrong extraction layer. These items stay visible and block final release until resolved or accepted by the accountant.")
@@ -729,10 +759,11 @@ def main() -> None:
 
     with extract_tab:
         _render_workflow_orchestrator(stage_groups[1]["steps"], repo_root, artifact_dir, stage_groups[1]["title"])
+        _render_extraction_fact_summary(artifact_dir)
+        _render_source_extraction_review(artifact_dir)
 
     with match_tab:
         _render_workflow_orchestrator(stage_groups[2]["steps"], repo_root, artifact_dir, stage_groups[2]["title"])
-        _render_source_extraction_review(artifact_dir)
 
     with coa_tab:
         _render_workflow_orchestrator(stage_groups[3]["steps"], repo_root, artifact_dir, stage_groups[3]["title"])
