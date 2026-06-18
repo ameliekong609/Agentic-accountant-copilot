@@ -464,8 +464,6 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifa
                 st.warning(readiness_text)
             else:
                 st.info(readiness_text)
-            if step["label"] == "Build document inventory":
-                _render_document_inventory_review(artifact_dir)
             button_key = _workflow_step_button_key(title, idx, step)
             if st.button(step["label"], key=button_key):
                 results = _run_step_command(step["command"], cwd)
@@ -475,8 +473,6 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifa
                 if summary["status"] == "Done":
                     st.success(summary["message"])
                     st.info(f"Output ready: {step.get('user_output', 'This step produced its expected outputs.')}")
-                    if step["label"] == "Build document inventory":
-                        _render_document_inventory_review(artifact_dir)
                     st.warning(f"Review now: {step.get('review_action', 'Continue to the next step if no review is needed.')}")
                 elif summary["status"] == "Check outputs":
                     st.warning(summary["message"])
@@ -489,6 +485,8 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifa
                             st.code(result.stdout[-4000:])
                         if result.stderr:
                             st.error(result.stderr[-4000:])
+            if step["label"] == "Build document inventory":
+                _render_document_inventory_review(artifact_dir)
 
 
 def _render_engagement_setup(artifact_dir: Path, state_path: Path, input_dir: Path) -> None:

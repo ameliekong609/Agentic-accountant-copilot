@@ -272,6 +272,15 @@ def test_workflow_orchestrator_does_not_show_misleading_progress_bar():
     assert "st.progress" not in source
 
 
+def test_workflow_orchestrator_renders_inventory_review_once_per_pass():
+    import inspect
+    from accountant_copilot.review_app import _render_workflow_orchestrator
+
+    source = inspect.getsource(_render_workflow_orchestrator)
+
+    assert source.count("_render_document_inventory_review(artifact_dir)") == 1
+
+
 def test_workflow_result_summary_hides_raw_stdout_for_good_ux():
     from subprocess import CompletedProcess
     from accountant_copilot.review_app import _workflow_result_summary
