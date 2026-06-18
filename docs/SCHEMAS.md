@@ -213,3 +213,5 @@ CSV source intake now validates required `date`, `description`, and `amount` col
 `export-broker-trade-review` creates unapproved accountant review findings for broker disposal/acquisition classification, gain/loss treatment, and bank settlement matching.
 
 `match-source-facts` matches extracted invoice, distribution/tax, and broker source facts to bank transaction evidence by exact amount/date. Proposed matches remain `approved=false`; ambiguous or missing matches become findings rather than forced links.
+
+`export-review-packet` includes `source_fact_layers.md` when source fact/review/matching markdown artifacts sit next to the engagement state, giving the accountant one packet section for bank transactions, invoice facts/review, distribution/tax facts/review, broker facts/review, and source-to-bank matching controls.

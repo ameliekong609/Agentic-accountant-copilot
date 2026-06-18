@@ -2335,8 +2335,35 @@ def _format_evidence_summary(state: EngagementState) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _format_source_fact_layers(state_path: Path) -> str:
+    base_dir = state_path.parent
+    artifacts = [
+        ("Bank transactions", "bank_transactions.md"),
+        ("Invoice facts", "invoice_facts.md"),
+        ("Invoice review", "invoice_review.md"),
+        ("Distribution/tax facts", "distribution_tax_facts.md"),
+        ("Distribution/tax review", "distribution_tax_review.md"),
+        ("Broker trade facts", "broker_trade_facts.md"),
+        ("Broker trade review", "broker_trade_review.md"),
+        ("Source fact bank matches", "source_fact_matches.md"),
+    ]
+    lines = ["# Source Fact and Review Layers", ""]
+    found = False
+    for title, filename in artifacts:
+        path = base_dir / filename
+        if not path.exists():
+            continue
+        found = True
+        content = path.read_text(errors="ignore").strip()
+        lines.extend([f"## {title}", "", f"Source artifact: `{path}`", "", content, ""])
+    if not found:
+        lines.append("No source fact layer artifacts found next to the engagement state.")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _export_review_packet_command(args: argparse.Namespace) -> int:
-    state = load_engagement_state(Path(args.state))
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     payload = inspect_engagement(state)
@@ -2347,6 +2374,7 @@ def _export_review_packet_command(args: argparse.Namespace) -> int:
         "- Resolve, reject, or accept open exceptions with rationale.",
         "- Confirm CoA approval where required.",
         "- Review adjustment/journal items before final sign-off.",
+        "- Review source fact layers in `source_fact_layers.md` for bank, invoice, distribution/tax, broker, and source-to-bank matching controls.",
         "",
         f"Readiness: {payload['readiness_summary']}",
     ]) + "\n"
@@ -2354,6 +2382,7 @@ def _export_review_packet_command(args: argparse.Namespace) -> int:
     (output_dir / "open_exceptions.md").write_text(format_exception_review(state))
     (output_dir / "document_summary.md").write_text(format_documents(state))
     (output_dir / "evidence_summary.md").write_text(_format_evidence_summary(state))
+    (output_dir / "source_fact_layers.md").write_text(_format_source_fact_layers(state_path))
     (output_dir / "preference_recommendations.md").write_text("Recommended preferences\n\n" + "\n".join(f"- {p.preference_id}: {p.rule}" for p in _recommended_preferences(state)) + "\n")
     template = {
         "engagement_id": state.engagement_id,

@@ -233,3 +233,42 @@ def test_export_review_packet_contains_accountant_handoff_files(tmp_path: Path) 
     assert (packet_dir / "evidence_summary.md").exists()
     assert (packet_dir / "preference_recommendations.md").exists()
     assert "What the accountant needs to decide" in (packet_dir / "README.md").read_text()
+
+
+def test_export_review_packet_includes_source_fact_review_artifacts(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    packet_dir = tmp_path / "packet"
+    _write_state(
+        state_path,
+        exceptions=[ExceptionItem(
+            exception_id="source_match_review",
+            source="source_fact_matching",
+            severity=ExceptionSeverity.HIGH,
+            category="source_fact_bank_match_missing",
+            description="Review source fact match.",
+            recommended_action="Resolve source fact match.",
+            requires_human_approval=True,
+        )],
+    )
+    for name, title in {
+        "bank_transactions.md": "# Bank Transactions",
+        "invoice_facts.md": "# Invoice Facts",
+        "invoice_review.md": "# Invoice Review",
+        "distribution_tax_facts.md": "# Distribution and Tax Facts",
+        "distribution_tax_review.md": "# Distribution Review",
+        "broker_trade_facts.md": "# Broker Trade Facts",
+        "broker_trade_review.md": "# Broker Review",
+        "source_fact_matches.md": "# Source Fact Bank Matches",
+    }.items():
+        (tmp_path / name).write_text(title + "\n")
+
+    result = _run_cli("export-review-packet", "--state", str(state_path), "--output-dir", str(packet_dir))
+
+    assert result.returncode == 1
+    source_layers = packet_dir / "source_fact_layers.md"
+    assert source_layers.exists()
+    content = source_layers.read_text()
+    assert "Bank Transactions" in content
+    assert "Distribution and Tax Facts" in content
+    assert "Source Fact Bank Matches" in content
+    assert "source_fact_layers.md" in (packet_dir / "README.md").read_text()
