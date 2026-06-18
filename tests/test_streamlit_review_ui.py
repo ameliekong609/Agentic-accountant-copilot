@@ -31,7 +31,7 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "Release blockers" in source
     assert "apply-accountant-review-workbench" in source
     assert "accept_multiple_files=True" in source
-    assert "Source issue triage" in source
+    assert "Accounting facts" in source
     assert "Process documents and build inventory" in source
     assert "Run intake" not in source
     assert "Build document inventory" not in source
@@ -51,7 +51,7 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "Default reviewer" in source
     assert "Default rationale" in source
     assert "Approve all visible CoA accounts" in source
-    assert "Save suggested non-blocking routing fixes" in source
+    assert "Accounting facts" in source
     assert "Editable CoA review table" in source
     assert "Build reviewed TB and draft statements" in source
     assert _main_tab_labels()[0] == "1 Upload source documents"
@@ -121,25 +121,31 @@ def test_document_inventory_rows_are_reviewable_inline(tmp_path: Path):
     }]
 
 
-def test_extraction_fact_summary_rows_show_business_output(tmp_path: Path):
-    from accountant_copilot.review_app import _extraction_fact_summary_rows
+def test_accounting_fact_rows_show_document_level_output_with_multiple_facts(tmp_path: Path):
+    from accountant_copilot.review_app import _accounting_fact_rows
 
-    (tmp_path / "bank_statement_facts.json").write_text(json.dumps({"facts": [{}, {}], "findings": [{}]}))
-    (tmp_path / "bank_transactions.json").write_text(json.dumps({"transactions": [{}, {}, {}], "findings": []}))
+    (tmp_path / "engagement_state.json").write_text(json.dumps({"source_documents": [
+        {"document_id": "raw_001", "file_path": "inputs/bank.pdf", "document_type": "bank_statement"},
+        {"document_id": "raw_002", "file_path": "inputs/an3.pdf", "document_type": "investment_statement"},
+    ]}))
+    (tmp_path / "bank_statement_facts.json").write_text(json.dumps({"facts": [{"document_id": "raw_001", "account_number": "123", "closing_balance": "100.00", "statement_period": "Jan 2025", "evidence_id": "raw_001_page_001"}], "findings": [{"document_id": "raw_001", "category": "page_noise"}]}))
+    (tmp_path / "distribution_tax_facts.json").write_text(json.dumps({"facts": [{"document_id": "raw_002", "investment_name": "ANZ Capital Notes 9", "security_code": "AN3PL", "payment_date": "20 June 2024", "amount": "6,450.30", "evidence_id": "raw_002_page_001"}], "findings": []}))
 
-    rows = _extraction_fact_summary_rows(tmp_path)
+    rows = _accounting_fact_rows(tmp_path)
 
-    assert rows[0] == {"output": "Bank statement facts", "records": 2, "review_items": 1}
-    assert rows[1] == {"output": "Bank transactions", "records": 3, "review_items": 0}
+    assert rows == [
+        {"document": "bank.pdf", "document_type": "bank_statement", "fact_type": "bank_statement", "accounting_facts": "Account 123; period Jan 2025; closing balance 100.00", "evidence": "raw_001_page_001", "status": "extracted"},
+        {"document": "an3.pdf", "document_type": "investment_statement", "fact_type": "distribution_tax", "accounting_facts": "ANZ Capital Notes 9; AN3PL; payment 20 June 2024; amount 6,450.30", "evidence": "raw_002_page_001", "status": "extracted"},
+    ]
 
 
-def test_extract_tab_renders_extraction_output_inline_before_matching():
+def test_extract_tab_renders_accounting_facts_not_triage_first():
     source = APP.read_text()
     extract_block = source.split("with extract_tab:", 1)[1].split("with match_tab:", 1)[0]
     match_block = source.split("with match_tab:", 1)[1].split("with coa_tab:", 1)[0]
 
-    assert "_render_extraction_fact_summary(artifact_dir)" in extract_block
-    assert "_render_source_extraction_review(artifact_dir)" in extract_block
+    assert "_render_accounting_facts_output(artifact_dir)" in extract_block
+    assert "_render_source_extraction_review(artifact_dir)" not in extract_block
     assert "_render_source_extraction_review(artifact_dir)" not in match_block
 
 
@@ -210,72 +216,6 @@ def test_source_review_items_explain_incomplete_and_wrong_type_findings(tmp_path
     assert items[0]["blocks_release"] is True
     assert items[1]["issue_type"] == "incomplete extraction"
     assert "Review distribution" in items[1]["recommended_action"]
-
-
-def test_source_issue_triage_suggests_obvious_wrong_layer_resolution():
-    from accountant_copilot.review_app import _source_issue_resolution_suggestion
-
-    issue = {
-        "layer": "invoice",
-        "document_id": "raw_017",
-        "file_path": "inputs/Confirmation-SELL.PDF",
-        "document_type": "broker_confirmation",
-        "issue_type": "wrong document-type candidate",
-        "evidence_id": "raw_017_page_001",
-    }
-
-    suggestion = _source_issue_resolution_suggestion(issue)
-
-    assert suggestion["suggested_action"] == "route_to_broker_trade"
-    assert suggestion["ui_action"] == "mark_out_of_scope"
-    assert suggestion["escalate"] is False
-    assert suggestion["blocks_release_after_action"] is False
-    assert "broker" in suggestion["suggested_rationale"].lower()
-
-
-def test_source_issue_triage_rows_are_grouped_per_document():
-    from accountant_copilot.review_app import _source_issue_triage_rows
-
-    issues = [
-        {
-            "layer": "invoice",
-            "document_id": "raw_017",
-            "file_path": "inputs/Confirmation-SELL.PDF",
-            "document_type": "broker_confirmation",
-            "issue_type": "wrong document-type candidate",
-            "evidence_id": "raw_017_page_001",
-            "category": "invoice_fact_extraction_incomplete",
-        },
-        {
-            "layer": "distribution/tax",
-            "document_id": "raw_008",
-            "file_path": "inputs/AN3_Payment_Advice.pdf",
-            "document_type": "investment_statement",
-            "issue_type": "incomplete extraction",
-            "evidence_id": "raw_008_page_001",
-            "category": "distribution_tax_fact_extraction_incomplete",
-        },
-    ]
-
-    rows = _source_issue_triage_rows(issues)
-
-    assert rows[0]["document"] == "Confirmation-SELL.PDF"
-    assert rows[0]["suggested_action"] == "route_to_broker_trade"
-    assert rows[0]["needs_accountant"] == "no"
-    assert rows[0]["page_evidence"] == "raw_017_page_001"
-    assert rows[1]["needs_accountant"] == "yes"
-    assert rows[1]["suggested_action"] == "escalate_for_review"
-
-
-def test_source_review_renderer_uses_triage_table_not_one_by_one_selectboxes():
-    import inspect
-    from accountant_copilot.review_app import _render_source_extraction_review
-
-    source = inspect.getsource(_render_source_extraction_review)
-
-    assert "_source_issue_triage_rows" in source
-    assert "st.dataframe" in source
-    assert "st.selectbox" not in source
 
 
 def test_guided_workflow_commands_are_available_for_ui():

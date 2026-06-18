@@ -408,43 +408,6 @@ def _source_review_items(artifact_dir: Path) -> list[dict[str, Any]]:
     return items
 
 
-def _source_issue_resolution_suggestion(issue: dict[str, Any]) -> dict[str, Any]:
-    if issue.get("layer") == "invoice" and issue.get("document_type") == "broker_confirmation" and issue.get("issue_type") == "wrong document-type candidate":
-        return {
-            "suggested_action": "route_to_broker_trade",
-            "ui_action": "mark_out_of_scope",
-            "escalate": False,
-            "blocks_release_after_action": False,
-            "suggested_rationale": "Broker confirmation routed into invoice extraction because it contains invoice wording; treat this as out of scope for invoice extraction and review under broker trade evidence if required.",
-        }
-    return {
-        "suggested_action": "escalate_for_review",
-        "ui_action": "needs_better_document",
-        "escalate": True,
-        "blocks_release_after_action": True,
-        "suggested_rationale": "Needs accountant review because the worker cannot confidently resolve this extraction issue from document type and layer alone.",
-    }
-
-
-def _source_issue_triage_rows(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for issue in issues:
-        suggestion = _source_issue_resolution_suggestion(issue)
-        file_path = str(issue.get("file_path", ""))
-        rows.append({
-            "document_id": issue.get("document_id", ""),
-            "document": Path(file_path).name or file_path,
-            "document_type": issue.get("document_type", "unknown"),
-            "issue": issue.get("issue_type", ""),
-            "layer": issue.get("layer", ""),
-            "page_evidence": issue.get("evidence_id", ""),
-            "suggested_action": suggestion["suggested_action"],
-            "needs_accountant": "yes" if suggestion["escalate"] else "no",
-            "rationale": suggestion["suggested_rationale"],
-        })
-    return rows
-
-
 def _source_resolution_payload(issue: dict[str, Any], action: str, reviewer: str, rationale: str) -> dict[str, Any]:
     return {
         "document_id": issue.get("document_id", ""),
@@ -510,73 +473,72 @@ def _coa_review_rows(workbench: dict[str, Any]) -> list[dict[str, str]]:
     return rows
 
 
-def _extraction_fact_summary_rows(artifact_dir: Path) -> list[dict[str, int | str]]:
-    outputs = [
-        ("Bank statement facts", "bank_statement_facts.json", "facts"),
-        ("Bank transactions", "bank_transactions.json", "transactions"),
-        ("Invoice facts", "invoice_facts.json", "facts"),
-        ("Distribution/tax facts", "distribution_tax_facts.json", "facts"),
-        ("Broker trade facts", "broker_trade_facts.json", "facts"),
+def _accounting_fact_summary(fact_type: str, fact: dict[str, Any]) -> str:
+    if fact_type == "bank_statement":
+        account = fact.get("account_number") or fact.get("account_number_raw") or fact.get("account_key_raw") or "bank account"
+        period = fact.get("statement_period") or " → ".join(x for x in [fact.get("statement_period_start"), fact.get("statement_period_end")] if x)
+        parts = [f"Account {account}"]
+        if period:
+            parts.append(f"period {period}")
+        if fact.get("closing_balance"):
+            parts.append(f"closing balance {fact.get('closing_balance')}")
+        return "; ".join(parts)
+    if fact_type == "bank_transaction":
+        amount = fact.get("credit") or fact.get("debit") or "amount not extracted"
+        direction = "credit" if fact.get("credit") else "debit" if fact.get("debit") else "transaction"
+        return "; ".join(x for x in [fact.get("transaction_date"), fact.get("description"), f"{direction} {amount}"] if x)
+    if fact_type == "invoice":
+        return "; ".join(x for x in [fact.get("supplier"), fact.get("invoice_number"), fact.get("invoice_date"), f"amount {fact.get('amount_due')}" if fact.get("amount_due") else None, f"GST {fact.get('gst')}" if fact.get("gst") else None] if x)
+    if fact_type == "distribution_tax":
+        name = fact.get("investment_name") or fact.get("document_type") or "distribution/tax item"
+        return "; ".join(x for x in [name, fact.get("security_code"), f"payment {fact.get('payment_date')}" if fact.get("payment_date") else None, f"amount {fact.get('amount')}" if fact.get("amount") else None] if x)
+    if fact_type == "broker_trade":
+        fields = fact.get("fields", {}) if isinstance(fact.get("fields"), dict) else {}
+        return "; ".join(x for x in [fact.get("side"), fields.get("security"), f"settlement {fields.get('settlement_date')}" if fields.get("settlement_date") else None, f"amount {fields.get('settlement_amount')}" if fields.get("settlement_amount") else None] if x)
+    return "Extracted accounting fact"
+
+
+def _accounting_fact_rows(artifact_dir: Path) -> list[dict[str, str]]:
+    state = _load_json(artifact_dir / "engagement_state.json", {})
+    documents = {
+        doc.get("document_id", ""): doc
+        for doc in state.get("source_documents", [])
+        if doc.get("document_id")
+    }
+    specs = [
+        ("bank_statement", "bank_statement_facts.json", "facts"),
+        ("bank_transaction", "bank_transactions.json", "transactions"),
+        ("invoice", "invoice_facts.json", "facts"),
+        ("distribution_tax", "distribution_tax_facts.json", "facts"),
+        ("broker_trade", "broker_trade_facts.json", "facts"),
     ]
-    rows: list[dict[str, int | str]] = []
-    for label, filename, record_key in outputs:
-        path = artifact_dir / filename
-        if not path.exists():
-            continue
-        data = _load_json(path, {})
-        records = data.get(record_key, []) if isinstance(data, dict) else []
-        findings = data.get("findings", []) if isinstance(data, dict) else []
-        rows.append({"output": label, "records": len(records) if isinstance(records, list) else 0, "review_items": len(findings) if isinstance(findings, list) else 0})
+    rows: list[dict[str, str]] = []
+    for fact_type, filename, key in specs:
+        data = _load_json(artifact_dir / filename, {})
+        facts = data.get(key, []) if isinstance(data, dict) else []
+        for fact in facts if isinstance(facts, list) else []:
+            document_id = str(fact.get("document_id", ""))
+            doc = documents.get(document_id, {})
+            file_path = str(doc.get("file_path") or fact.get("file_path") or "")
+            rows.append({
+                "document": Path(file_path).name or file_path or document_id,
+                "document_type": str(doc.get("document_type") or fact.get("document_type") or "unknown"),
+                "fact_type": fact_type,
+                "accounting_facts": _accounting_fact_summary(fact_type, fact),
+                "evidence": str(fact.get("evidence_id", "")),
+                "status": "extracted",
+            })
     return rows
 
 
-def _render_extraction_fact_summary(artifact_dir: Path) -> None:
-    rows = _extraction_fact_summary_rows(artifact_dir)
+def _render_accounting_facts_output(artifact_dir: Path) -> None:
+    rows = _accounting_fact_rows(artifact_dir)
     if not rows:
-        st.info("Extracted facts will appear here after this step runs.")
+        st.info("Accounting facts will appear here after extraction runs.")
         return
-    st.markdown("**Extracted facts**")
-    st.write("Review these extracted record counts before matching. Extraction review items are listed separately.")
+    st.markdown("**Accounting facts**")
+    st.write("Each row is an extracted accounting fact linked back to its source document and evidence. Some documents can produce multiple facts.")
     st.dataframe(rows, use_container_width=True)
-
-
-def _render_source_extraction_review(artifact_dir: Path) -> None:
-    st.header("Source issue triage")
-    st.write("The worker groups extraction issues by document, suggests the obvious routing fixes, and escalates only the items that still need accountant judgement.")
-    items = _source_review_items(artifact_dir)
-    if not items:
-        st.success("No source extraction review items found.")
-        return
-    rows = _source_issue_triage_rows(items)
-    st.metric("Documents/issues needing triage", len(rows))
-    st.dataframe(rows, use_container_width=True)
-    auto_items = [item for item in items if not _source_issue_resolution_suggestion(item)["escalate"]]
-    escalated_items = [item for item in items if _source_issue_resolution_suggestion(item)["escalate"]]
-    if auto_items and st.button("Save suggested non-blocking routing fixes"):
-        for item in auto_items:
-            suggestion = _source_issue_resolution_suggestion(item)
-            _save_source_resolution(
-                artifact_dir,
-                _source_resolution_payload(
-                    item,
-                    action=suggestion["ui_action"],
-                    reviewer="AI-assisted triage",
-                    rationale=suggestion["suggested_rationale"],
-                ),
-            )
-        st.success(f"Saved {len(auto_items)} suggested non-blocking routing fix(es).")
-    if escalated_items:
-        st.subheader("Escalated items")
-        st.write("These still need accountant review because the worker cannot confidently resolve them from document type and layer alone.")
-        for item in escalated_items:
-            with st.expander(f"{Path(str(item.get('file_path', ''))).name} — {item.get('issue_type', '')}"):
-                st.write(f"File: `{item['file_path']}`")
-                st.write(f"Document type: `{item['document_type']}`")
-                st.write(f"Layer: `{item['layer']}`")
-                st.write(f"Category: `{item['category']}`")
-                if item["evidence_id"]:
-                    st.write(f"Evidence: `{item['evidence_id']}`")
-                st.warning(f"Recommended action: {item['recommended_action']}")
 
 
 def _render_document_inventory_review(artifact_dir: Path) -> None:
@@ -803,8 +765,7 @@ def main() -> None:
 
     with extract_tab:
         _render_workflow_orchestrator(stage_groups[1]["steps"], repo_root, artifact_dir, stage_groups[1]["title"])
-        _render_extraction_fact_summary(artifact_dir)
-        _render_source_extraction_review(artifact_dir)
+        _render_accounting_facts_output(artifact_dir)
 
     with match_tab:
         _render_workflow_orchestrator(stage_groups[2]["steps"], repo_root, artifact_dir, stage_groups[2]["title"])
