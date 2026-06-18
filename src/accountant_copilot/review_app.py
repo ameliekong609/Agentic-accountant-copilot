@@ -513,11 +513,14 @@ def _accounting_fact_rows(artifact_dir: Path) -> list[dict[str, str]]:
         ("broker_trade", "broker_trade_facts.json", "facts"),
     ]
     rows: list[dict[str, str]] = []
+    documents_with_facts: set[str] = set()
     for fact_type, filename, key in specs:
         data = _load_json(artifact_dir / filename, {})
         facts = data.get(key, []) if isinstance(data, dict) else []
         for fact in facts if isinstance(facts, list) else []:
             document_id = str(fact.get("document_id", ""))
+            if document_id:
+                documents_with_facts.add(document_id)
             doc = documents.get(document_id, {})
             file_path = str(doc.get("file_path") or fact.get("file_path") or "")
             rows.append({
@@ -528,7 +531,31 @@ def _accounting_fact_rows(artifact_dir: Path) -> list[dict[str, str]]:
                 "evidence": str(fact.get("evidence_id", "")),
                 "status": "extracted",
             })
+    for document_id, doc in documents.items():
+        if document_id in documents_with_facts:
+            continue
+        file_path = str(doc.get("file_path") or "")
+        rows.append({
+            "document": Path(file_path).name or file_path or document_id,
+            "document_type": str(doc.get("document_type") or "unknown"),
+            "fact_type": "none",
+            "accounting_facts": "No accounting fact extracted yet",
+            "evidence": "",
+            "status": "no_fact_extracted",
+        })
     return rows
+
+
+def _accounting_fact_output_summary(rows: list[dict[str, str]]) -> dict[str, int]:
+    documents = {row["document"] for row in rows}
+    documents_with_facts = {row["document"] for row in rows if row.get("status") == "extracted"}
+    accounting_fact_rows = sum(1 for row in rows if row.get("status") == "extracted")
+    return {
+        "uploaded_documents": len(documents),
+        "documents_with_facts": len(documents_with_facts),
+        "accounting_fact_rows": accounting_fact_rows,
+        "documents_without_facts": len(documents - documents_with_facts),
+    }
 
 
 def _render_accounting_facts_output(artifact_dir: Path) -> None:
@@ -536,6 +563,12 @@ def _render_accounting_facts_output(artifact_dir: Path) -> None:
     if not rows:
         st.info("Accounting facts will appear here after extraction runs.")
         return
+    summary = _accounting_fact_output_summary(rows)
+    cols = st.columns(4)
+    cols[0].metric("Uploaded documents", summary["uploaded_documents"])
+    cols[1].metric("Documents with facts", summary["documents_with_facts"])
+    cols[2].metric("Accounting fact rows", summary["accounting_fact_rows"])
+    cols[3].metric("Documents without facts", summary["documents_without_facts"])
     st.markdown("**Accounting facts**")
     st.write("Each row is an extracted accounting fact linked back to its source document and evidence. Some documents can produce multiple facts.")
     st.dataframe(rows, use_container_width=True)
