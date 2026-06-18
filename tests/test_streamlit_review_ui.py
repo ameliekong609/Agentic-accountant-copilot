@@ -35,6 +35,44 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "Build review packet" in source
     assert "Build release candidate" in source
     assert "Final export" in source
+    assert "Engagement setup" in source
+    assert "Status dashboard" in source
+    assert "Reviewed Trial Balance" in source
+    assert "Draft Statements" in source
+    assert "Final Output" in source
+    assert "Default reviewer" in source
+    assert "Default rationale" in source
+    assert "Approve all visible CoA accounts" in source
+
+
+def test_dashboard_summary_surfaces_tb_draft_and_release_status(tmp_path: Path):
+    from accountant_copilot.review_app import _dashboard_summary
+
+    (tmp_path / "engagement_state.json").write_text(json.dumps({
+        "entity_name": "Demo Trust",
+        "fy_start": "2024-07-01",
+        "fy_end": "2025-06-30",
+        "chart_accounts": [{"account_id": "a1", "status": "pending_review"}],
+        "adjustment_proposals": [{"adjustment_id": "j1", "status": "approved"}],
+    }))
+    (tmp_path / "release_blockers.json").write_text(json.dumps({"blockers": [{"category": "CoA"}, {"category": "final_signoff"}]}))
+    (tmp_path / "post_journal_trial_balance.json").write_text(json.dumps({
+        "summary": {"is_balanced": True, "pending_journals_excluded": 0},
+        "accounts": [{"account_id": "a1", "opening_balance": "100", "approved_debits": "0", "approved_credits": "0", "ending_balance": "100"}],
+    }))
+    draft_dir = tmp_path / "draft_statements"
+    draft_dir.mkdir()
+    (draft_dir / "draft_statements.json").write_text(json.dumps({"status": "internal_review_only", "findings": [], "statements": {"balance_sheet": []}}))
+
+    summary = _dashboard_summary(tmp_path)
+
+    assert summary["entity_name"] == "Demo Trust"
+    assert summary["release_blockers"] == 2
+    assert summary["coa_pending"] == 1
+    assert summary["approved_journals"] == 1
+    assert summary["tb_balanced"] is True
+    assert summary["draft_status"] == "internal_review_only"
+    assert summary["next_action"].startswith("Review")
 
 
 def test_source_review_items_explain_incomplete_and_wrong_type_findings(tmp_path: Path):

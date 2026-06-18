@@ -58,6 +58,49 @@ def _save_uploads(uploaded_files: list[Any], input_dir: Path) -> list[Path]:
     return saved
 
 
+def _dashboard_summary(artifact_dir: Path) -> dict[str, Any]:
+    state = _load_json(artifact_dir / "engagement_state.json", {})
+    blockers = _load_json(artifact_dir / "release_blockers.json", {"blockers": []}).get("blockers", [])
+    tb = _load_json(artifact_dir / "post_journal_trial_balance.json", {})
+    draft = _load_json(artifact_dir / "draft_statements" / "draft_statements.json", {})
+    release_manifest = artifact_dir / "release_candidate" / "release_candidate_manifest.json"
+    final_manifest = artifact_dir / "final_release_manifest.json"
+    coa_pending = sum(1 for account in state.get("chart_accounts", []) if account.get("status") != "approved")
+    approved_journals = sum(1 for journal in state.get("adjustment_proposals", []) if journal.get("status") == "approved")
+    source_review_count = len(_source_review_items(artifact_dir))
+    tb_summary = tb.get("summary", {})
+    draft_findings = draft.get("findings", [])
+    if source_review_count:
+        next_action = "Review source extraction issues before relying on extracted facts."
+    elif coa_pending:
+        next_action = "Review and approve pending CoA accounts."
+    elif blockers:
+        next_action = "Review release blockers and accountant decisions."
+    elif not release_manifest.exists():
+        next_action = "Build release candidate."
+    elif not final_manifest.exists():
+        next_action = "Complete final sign-off and export final package."
+    else:
+        next_action = "Final output package is available."
+    return {
+        "entity_name": state.get("entity_name", "New engagement"),
+        "fy_start": state.get("fy_start", ""),
+        "fy_end": state.get("fy_end", ""),
+        "documents": len(state.get("source_documents", [])),
+        "release_blockers": len(blockers),
+        "source_review_items": source_review_count,
+        "coa_pending": coa_pending,
+        "approved_journals": approved_journals,
+        "tb_balanced": tb_summary.get("is_balanced"),
+        "pending_journals_excluded": tb_summary.get("pending_journals_excluded"),
+        "draft_status": draft.get("status", "missing"),
+        "draft_findings": len(draft_findings) if isinstance(draft_findings, list) else draft_findings,
+        "release_candidate": release_manifest.exists(),
+        "final_manifest": final_manifest.exists(),
+        "next_action": next_action,
+    }
+
+
 def _run_cli(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
@@ -252,6 +295,90 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path) -> Non
                         st.error(result.stderr[-4000:])
 
 
+def _render_engagement_setup(artifact_dir: Path, state_path: Path, input_dir: Path) -> None:
+    st.header("Engagement setup")
+    state = _load_json(state_path, {})
+    col1, col2 = st.columns(2)
+    with col1:
+        st.text_input("Client / entity name", state.get("entity_name", ""), key="setup_entity_name")
+        st.text_input("Entity type", state.get("entity_type", ""), key="setup_entity_type")
+    with col2:
+        st.text_input("Financial year start", state.get("fy_start", ""), key="setup_fy_start")
+        st.text_input("Financial year end", state.get("fy_end", ""), key="setup_fy_end")
+    st.caption("This setup screen is product-facing. Technical paths are kept in the sidebar for now while the local prototype matures.")
+    st.write(f"Input folder: `{input_dir}`")
+    st.write(f"Workspace: `{artifact_dir}`")
+
+
+def _render_status_dashboard(artifact_dir: Path) -> None:
+    st.header("Status dashboard")
+    summary = _dashboard_summary(artifact_dir)
+    st.subheader(summary["entity_name"])
+    if summary["fy_start"] or summary["fy_end"]:
+        st.caption(f"Financial year: {summary['fy_start']} → {summary['fy_end']}")
+    cols = st.columns(6)
+    cols[0].metric("Documents", summary["documents"])
+    cols[1].metric("Source issues", summary["source_review_items"])
+    cols[2].metric("CoA pending", summary["coa_pending"])
+    cols[3].metric("Approved journals", summary["approved_journals"])
+    cols[4].metric("Release blockers", summary["release_blockers"])
+    cols[5].metric("Draft status", summary["draft_status"])
+    st.info(f"Next action: {summary['next_action']}")
+
+
+def _render_trial_balance_review(artifact_dir: Path) -> None:
+    st.header("Reviewed Trial Balance")
+    tb = _load_json(artifact_dir / "post_journal_trial_balance.json", {})
+    if not tb:
+        st.warning("No reviewed/post-journal trial balance found yet. Run the workflow through reviewed journals and post-journal TB.")
+        return
+    summary = tb.get("summary", {})
+    if summary.get("is_balanced") is True:
+        st.success(f"Trial balance is balanced. {summary.get('pending_journals_excluded', 0)} pending journals included/excluded by controls.")
+    else:
+        st.error("Trial balance is not confirmed balanced yet.")
+    accounts = tb.get("accounts", [])
+    if accounts:
+        st.dataframe(accounts, use_container_width=True)
+
+
+def _render_draft_statements_review(artifact_dir: Path) -> None:
+    st.header("Draft Statements")
+    draft = _load_json(artifact_dir / "draft_statements" / "draft_statements.json", {})
+    if not draft:
+        st.warning("No draft statements found yet. Run the draft statements workflow step first.")
+        return
+    st.warning("Internal review draft — not client ready.")
+    st.write(f"Status: `{draft.get('status', 'unknown')}`")
+    findings = draft.get("findings", [])
+    st.write(f"Findings: `{len(findings) if isinstance(findings, list) else findings}`")
+    statements = draft.get("statements", {})
+    for name, rows in statements.items():
+        with st.expander(name.replace("_", " ").title(), expanded=name in {"balance_sheet", "income_statement"}):
+            if isinstance(rows, list) and rows:
+                st.dataframe(rows, use_container_width=True)
+            else:
+                st.write(rows or "No rows available.")
+
+
+def _render_final_output(artifact_dir: Path) -> None:
+    st.header("Final Output")
+    candidate = artifact_dir / "release_candidate" / "release_candidate_manifest.json"
+    final_manifest = artifact_dir / "final_release_manifest.json"
+    if candidate.exists():
+        st.success("Release candidate package exists.")
+        st.caption(str(candidate))
+        st.json(_load_json(candidate, {}))
+    else:
+        st.warning("Release candidate has not been built yet.")
+    if final_manifest.exists():
+        st.success("Final release manifest exists.")
+        st.caption(str(final_manifest))
+        st.json(_load_json(final_manifest, {}))
+    else:
+        st.info("Final export is waiting for clean release candidate verification and accountant final sign-off.")
+
+
 def _render_blockers(blockers: list[dict[str, Any]]) -> None:
     st.subheader("Release blockers")
     if not blockers:
@@ -263,13 +390,13 @@ def _render_blockers(blockers: list[dict[str, Any]]) -> None:
         st.write(f"Required action: {blocker.get('required_action', '')}")
 
 
-def _decision_fields(prefix: str, include_offset: bool = False) -> dict[str, str]:
+def _decision_fields(prefix: str, include_offset: bool = False, default_reviewer: str = "", default_rationale: str = "") -> dict[str, str]:
     action = st.selectbox("Action", ["", "approve", "reject"], key=f"{prefix}_action")
     offset = ""
     if include_offset:
         offset = st.text_input("Offset account ID", key=f"{prefix}_offset")
-    approved_by = st.text_input("Reviewer", key=f"{prefix}_reviewer")
-    rationale = st.text_area("Rationale", key=f"{prefix}_rationale")
+    approved_by = st.text_input("Reviewer", value=default_reviewer, key=f"{prefix}_reviewer")
+    rationale = st.text_area("Rationale", value=default_rationale, key=f"{prefix}_rationale")
     payload = {"action": action, "approved_by": approved_by, "rationale": rationale}
     if include_offset:
         payload["offset_account_id"] = offset
@@ -279,15 +406,23 @@ def _decision_fields(prefix: str, include_offset: bool = False) -> dict[str, str
 def _render_workbench(workbench: dict[str, Any]) -> dict[str, Any]:
     edited = json.loads(json.dumps(workbench))
     sections = edited.setdefault("sections", {})
+    st.subheader("Review defaults")
+    default_reviewer = st.text_input("Default reviewer", key="default_reviewer")
+    default_rationale = st.text_area("Default rationale", key="default_rationale")
 
     st.subheader("CoA Review")
     coa_accounts = sections.get("coa_accounts", [])
+    if coa_accounts and st.button("Approve all visible CoA accounts"):
+        for account in coa_accounts:
+            account["action"] = "approve"
+            account["approved_by"] = default_reviewer
+            account["rationale"] = default_rationale or "Reviewed and approved in accountant review UI."
     if not coa_accounts:
         st.info("No CoA accounts pending review.")
     for idx, account in enumerate(coa_accounts):
         with st.expander(f"{account.get('code')} — {account.get('name')} ({account.get('status')})", expanded=idx < 3):
             st.write({k: account.get(k) for k in ["account_id", "type", "presentation_group", "opening_balance"]})
-            account.update(_decision_fields(f"coa_{idx}"))
+            account.update(_decision_fields(f"coa_{idx}", default_reviewer=default_reviewer, default_rationale=default_rationale))
 
     st.subheader("Journal Review")
     journals = sections.get("journal_decisions", [])
@@ -296,17 +431,17 @@ def _render_workbench(workbench: dict[str, Any]) -> dict[str, Any]:
     for idx, journal in enumerate(journals):
         with st.expander(f"{journal.get('adjustment_id')} — {journal.get('amount')}"):
             st.write({k: journal.get(k) for k in ["description", "debit_account", "credit_account", "amount", "status"]})
-            journal.update(_decision_fields(f"journal_{idx}", include_offset=True))
+            journal.update(_decision_fields(f"journal_{idx}", include_offset=True, default_reviewer=default_reviewer, default_rationale=default_rationale))
 
     st.subheader("Draft Statement Review")
     draft = sections.setdefault("draft_statement_review", {})
     st.write(f"Status: `{draft.get('draft_status', 'missing')}`")
     st.write(f"Findings: `{draft.get('draft_findings', 0)}`")
-    draft.setdefault("decision", {}).update(_decision_fields("draft_review"))
+    draft.setdefault("decision", {}).update(_decision_fields("draft_review", default_reviewer=default_reviewer, default_rationale=default_rationale))
 
     st.subheader("Final Sign-off")
     st.warning("Only sign off after release candidate verification is clean.")
-    sections.setdefault("final_signoff", {}).update(_decision_fields("final_signoff"))
+    sections.setdefault("final_signoff", {}).update(_decision_fields("final_signoff", default_reviewer=default_reviewer, default_rationale=default_rationale))
     return edited
 
 
@@ -332,14 +467,22 @@ def main() -> None:
         st.caption("Use `ingest-raw-inputs` after staging new uploads.")
 
     workflow_steps = _workflow_steps(str(input_dir), str(artifact_dir), str(state_path))
-    upload_tab, workflow_tab, source_review_tab, review_tab, artifacts_tab, apply_tab = st.tabs([
+    setup_tab, upload_tab, workflow_tab, source_review_tab, tb_tab, draft_tab, review_tab, artifacts_tab, final_tab, apply_tab = st.tabs([
+        "0 Engagement setup",
         "1 Upload source documents",
         "2 Run workflow",
         "3 Source Extraction Review",
-        "4 Accountant Review",
-        "5 Artifacts",
-        "6 Apply decisions",
+        "4 Reviewed Trial Balance",
+        "5 Draft Statements",
+        "6 Accountant Review",
+        "7 Artifacts",
+        "8 Final Output",
+        "9 Apply decisions",
     ])
+
+    with setup_tab:
+        _render_engagement_setup(artifact_dir, state_path, input_dir)
+        _render_status_dashboard(artifact_dir)
 
     with upload_tab:
         st.header("Upload source documents")
@@ -360,6 +503,12 @@ def main() -> None:
 
     with source_review_tab:
         _render_source_extraction_review(artifact_dir)
+
+    with tb_tab:
+        _render_trial_balance_review(artifact_dir)
+
+    with draft_tab:
+        _render_draft_statements_review(artifact_dir)
 
     workbench = _load_json(artifact_dir / "accountant_review_workbench.json", {})
     blockers = _load_json(artifact_dir / "release_blockers.json", {"blockers": []})
@@ -386,6 +535,9 @@ def main() -> None:
                 st.subheader(label)
                 st.caption(str(path))
                 st.text_area(label, path.read_text()[:20000], height=220, key=f"artifact_{rel}")
+
+    with final_tab:
+        _render_final_output(artifact_dir)
 
     with apply_tab:
         st.header("Apply decisions through controls")
