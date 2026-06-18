@@ -535,7 +535,17 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli serve-accountant-review-ui \
   --state outputs/raw_inputs_pdf_extraction/engagement_state.json \
   --artifact-dir outputs/raw_inputs_pdf_extraction \
   --input-dir inputs
+```
 
+The Streamlit app is the product-facing workflow shell:
+
+1. Upload source documents.
+2. Run workflow steps: intake, inventory, fact extraction, matching, CoA/mapping prep, review packet, release candidate, final export.
+3. Review source extraction issues such as incomplete fields or wrong document-type candidates.
+4. Complete accountant review decisions and apply them through deterministic controls.
+5. Review artifacts and release blockers before final export.
+
+```bash
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \
   --facts outputs/bank_statement_facts.json \
   --output outputs/bank_continuity.md

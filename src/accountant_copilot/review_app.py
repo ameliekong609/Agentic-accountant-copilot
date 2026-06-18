@@ -64,6 +64,194 @@ def _run_cli(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, "-m", "accountant_copilot.cli", *args], cwd=cwd, env=env, text=True, capture_output=True, check=False)
 
 
+def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "label": "Run intake",
+            "description": "Register uploaded source documents and create evidence/extraction review records.",
+            "command": ["ingest-raw-inputs", "--state", state_path, "--input-dir", input_dir],
+            "outputs": [state_path],
+        },
+        {
+            "label": "Build document inventory",
+            "description": "Summarize uploaded documents and page-level evidence for accountant review.",
+            "command": ["export-document-inventory", "--state", state_path, "--output", f"{artifact_dir}/document_inventory.md"],
+            "outputs": [f"{artifact_dir}/document_inventory.md"],
+        },
+        {
+            "label": "Extract accounting facts",
+            "description": "Extract bank, invoice, distribution/tax, and broker trade facts from source evidence.",
+            "command": [
+                ["export-bank-statement-facts", "--state", state_path, "--output", f"{artifact_dir}/bank_statement_facts.md"],
+                ["export-bank-transactions", "--state", state_path, "--output", f"{artifact_dir}/bank_transactions.md"],
+                ["export-invoice-facts", "--state", state_path, "--output", f"{artifact_dir}/invoice_facts.md"],
+                ["export-distribution-tax-facts", "--state", state_path, "--output", f"{artifact_dir}/distribution_tax_facts.md"],
+                ["export-broker-trade-facts", "--state", state_path, "--output", f"{artifact_dir}/broker_trade_facts.md"],
+            ],
+            "outputs": [
+                f"{artifact_dir}/bank_statement_facts.json",
+                f"{artifact_dir}/bank_transactions.json",
+                f"{artifact_dir}/invoice_facts.json",
+                f"{artifact_dir}/distribution_tax_facts.json",
+                f"{artifact_dir}/broker_trade_facts.json",
+            ],
+        },
+        {
+            "label": "Match source facts",
+            "description": "Match invoice, distribution/tax, and broker facts to bank transaction evidence.",
+            "command": [
+                "match-source-facts",
+                "--bank-transactions",
+                f"{artifact_dir}/bank_transactions.json",
+                "--invoice-facts",
+                f"{artifact_dir}/invoice_facts.json",
+                "--distribution-tax-facts",
+                f"{artifact_dir}/distribution_tax_facts.json",
+                "--broker-trade-facts",
+                f"{artifact_dir}/broker_trade_facts.json",
+                "--output",
+                f"{artifact_dir}/source_fact_matches.md",
+            ],
+            "outputs": [f"{artifact_dir}/source_fact_matches.json"],
+        },
+        {
+            "label": "Build CoA and mappings",
+            "description": "Import candidate accounts and suggest unapproved source-fact-to-CoA mappings.",
+            "command": [
+                ["import-coa-from-prior-statements", "--state", state_path, "--output", f"{artifact_dir}/prior_statement_coa_import.md"],
+                [
+                    "suggest-coa-mappings",
+                    "--state",
+                    state_path,
+                    "--invoice-facts",
+                    f"{artifact_dir}/invoice_facts.json",
+                    "--distribution-tax-facts",
+                    f"{artifact_dir}/distribution_tax_facts.json",
+                    "--broker-trade-facts",
+                    f"{artifact_dir}/broker_trade_facts.json",
+                    "--output",
+                    f"{artifact_dir}/coa_mapping_suggestions.md",
+                ],
+            ],
+            "outputs": [f"{artifact_dir}/prior_statement_coa_import.md", f"{artifact_dir}/coa_mapping_suggestions.json"],
+        },
+        {
+            "label": "Build review packet",
+            "description": "Refresh release blockers, accountant workbench, review UI bundle, and review packet links.",
+            "command": [
+                ["export-accountant-review-workbench", "--state", state_path, "--artifact-dir", artifact_dir, "--output", f"{artifact_dir}/accountant_review_workbench.json"],
+                ["explain-release-blockers", "--state", state_path, "--artifact-dir", artifact_dir, "--output", f"{artifact_dir}/release_blockers.md"],
+                ["export-review-ui-bundle", "--state", state_path, "--artifact-dir", artifact_dir, "--output-dir", f"{artifact_dir}/review_ui_bundle"],
+            ],
+            "outputs": [f"{artifact_dir}/accountant_review_workbench.json", f"{artifact_dir}/release_blockers.json"],
+        },
+        {
+            "label": "Build release candidate",
+            "description": "Package controlled release artifacts after accountant approvals clear blockers.",
+            "command": ["build-release-candidate-package", "--state", state_path, "--artifact-dir", artifact_dir, "--output-dir", f"{artifact_dir}/release_candidate"],
+            "outputs": [f"{artifact_dir}/release_candidate/release_candidate_manifest.json"],
+        },
+        {
+            "label": "Final export",
+            "description": "Export final manifest only after final sign-off and clean release-candidate verification.",
+            "command": [
+                "export-final-release-manifest",
+                "--state",
+                state_path,
+                "--release-candidate",
+                f"{artifact_dir}/release_candidate/release_candidate_manifest.json",
+                "--output",
+                f"{artifact_dir}/final_release_manifest.json",
+            ],
+            "outputs": [f"{artifact_dir}/final_release_manifest.json"],
+        },
+    ]
+
+
+def _run_step_command(command: Any, cwd: Path) -> list[subprocess.CompletedProcess[str]]:
+    commands = command if command and isinstance(command[0], list) else [command]
+    return [_run_cli(list(args), cwd) for args in commands]
+
+
+def _source_documents_by_id(artifact_dir: Path) -> dict[str, dict[str, Any]]:
+    state = _load_json(artifact_dir / "engagement_state.json", {})
+    return {doc.get("document_id", ""): doc for doc in state.get("source_documents", [])}
+
+
+def _source_review_items(artifact_dir: Path) -> list[dict[str, Any]]:
+    docs = _source_documents_by_id(artifact_dir)
+    layers = [
+        ("invoice", artifact_dir / "invoice_facts.json"),
+        ("distribution/tax", artifact_dir / "distribution_tax_facts.json"),
+        ("broker trade", artifact_dir / "broker_trade_facts.json"),
+        ("bank statement", artifact_dir / "bank_statement_facts.json"),
+    ]
+    items: list[dict[str, Any]] = []
+    for layer, path in layers:
+        for finding in _load_json(path, {}).get("findings", []):
+            doc_id = finding.get("document_id", "")
+            doc = docs.get(doc_id, {})
+            actual_type = doc.get("document_type", "unknown")
+            issue_type = "incomplete extraction"
+            if layer == "invoice" and actual_type == "broker_confirmation":
+                issue_type = "wrong document-type candidate"
+            items.append({
+                "layer": layer,
+                "document_id": doc_id,
+                "file_path": doc.get("file_path", "unknown"),
+                "document_type": actual_type,
+                "issue_type": issue_type,
+                "category": finding.get("category", "finding"),
+                "missing_fields": ", ".join(finding.get("missing_fields", [])),
+                "evidence_id": finding.get("evidence_id", ""),
+                "recommended_action": finding.get("recommended_action", "Review source evidence and record accountant decision."),
+                "blocks_release": True,
+            })
+    return items
+
+
+def _render_source_extraction_review(artifact_dir: Path) -> None:
+    st.header("Source Extraction Review")
+    st.write("Incomplete means a document was detected but some fields are missing, uncertain, or routed to the wrong extraction layer. These items stay visible and block final release until resolved or accepted by the accountant.")
+    items = _source_review_items(artifact_dir)
+    if not items:
+        st.success("No source extraction review items found.")
+        return
+    st.metric("Review items", len(items))
+    for item in items:
+        title = f"{item['layer']} — {item['document_id']} — {item['issue_type']}"
+        with st.expander(title, expanded=item["issue_type"] == "wrong document-type candidate"):
+            st.write(f"File: `{item['file_path']}`")
+            st.write(f"Document type: `{item['document_type']}`")
+            st.write(f"Category: `{item['category']}`")
+            if item["missing_fields"]:
+                st.write(f"Missing fields: `{item['missing_fields']}`")
+            if item["evidence_id"]:
+                st.write(f"Evidence: `{item['evidence_id']}`")
+            st.warning(f"Recommended action: {item['recommended_action']}")
+            st.caption("Resolution options: upload a better document, reprocess, correct fields manually, mark out of scope, or accept risk with rationale.")
+
+
+def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path) -> None:
+    st.header("Guided workflow")
+    st.write("Run the app from upload through release. Each button calls the deterministic backend command and shows status/output here.")
+    for idx, step in enumerate(steps, start=1):
+        with st.expander(f"{idx}. {step['label']}", expanded=idx <= 3):
+            st.write(step["description"])
+            outputs = [Path(path) for path in step.get("outputs", [])]
+            complete_count = sum(path.exists() for path in outputs)
+            st.progress(complete_count / len(outputs) if outputs else 0)
+            st.caption(f"Outputs present: {complete_count}/{len(outputs)}")
+            if st.button(step["label"], key=f"run_step_{idx}"):
+                results = _run_step_command(step["command"], cwd)
+                for result in results:
+                    st.write(f"Exit code: {result.returncode}")
+                    if result.stdout:
+                        st.code(result.stdout[-4000:])
+                    if result.stderr:
+                        st.error(result.stderr[-4000:])
+
+
 def _render_blockers(blockers: list[dict[str, Any]]) -> None:
     st.subheader("Release blockers")
     if not blockers:
@@ -143,7 +331,15 @@ def main() -> None:
         input_dir = Path(st.text_input("Upload/input directory", str(input_dir)))
         st.caption("Use `ingest-raw-inputs` after staging new uploads.")
 
-    upload_tab, review_tab, artifacts_tab, apply_tab = st.tabs(["1 Upload source documents", "2 Accountant Review", "3 Artifacts", "4 Apply decisions"])
+    workflow_steps = _workflow_steps(str(input_dir), str(artifact_dir), str(state_path))
+    upload_tab, workflow_tab, source_review_tab, review_tab, artifacts_tab, apply_tab = st.tabs([
+        "1 Upload source documents",
+        "2 Run workflow",
+        "3 Source Extraction Review",
+        "4 Accountant Review",
+        "5 Artifacts",
+        "6 Apply decisions",
+    ])
 
     with upload_tab:
         st.header("Upload source documents")
@@ -157,7 +353,13 @@ def main() -> None:
                     st.write(str(path))
             else:
                 st.info("No files selected.")
-        st.code(f"PYTHONPATH=src python3.11 -m accountant_copilot.cli ingest-raw-inputs --input-dir {input_dir} --output-dir {artifact_dir}")
+        st.code(f"PYTHONPATH=src python3.11 -m accountant_copilot.cli ingest-raw-inputs --input-dir {input_dir} --state {state_path}")
+
+    with workflow_tab:
+        _render_workflow_orchestrator(workflow_steps, repo_root)
+
+    with source_review_tab:
+        _render_source_extraction_review(artifact_dir)
 
     workbench = _load_json(artifact_dir / "accountant_review_workbench.json", {})
     blockers = _load_json(artifact_dir / "release_blockers.json", {"blockers": []})
