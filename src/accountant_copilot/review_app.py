@@ -408,6 +408,43 @@ def _source_review_items(artifact_dir: Path) -> list[dict[str, Any]]:
     return items
 
 
+def _source_issue_resolution_suggestion(issue: dict[str, Any]) -> dict[str, Any]:
+    if issue.get("layer") == "invoice" and issue.get("document_type") == "broker_confirmation" and issue.get("issue_type") == "wrong document-type candidate":
+        return {
+            "suggested_action": "route_to_broker_trade",
+            "ui_action": "mark_out_of_scope",
+            "escalate": False,
+            "blocks_release_after_action": False,
+            "suggested_rationale": "Broker confirmation routed into invoice extraction because it contains invoice wording; treat this as out of scope for invoice extraction and review under broker trade evidence if required.",
+        }
+    return {
+        "suggested_action": "escalate_for_review",
+        "ui_action": "needs_better_document",
+        "escalate": True,
+        "blocks_release_after_action": True,
+        "suggested_rationale": "Needs accountant review because the worker cannot confidently resolve this extraction issue from document type and layer alone.",
+    }
+
+
+def _source_issue_triage_rows(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for issue in issues:
+        suggestion = _source_issue_resolution_suggestion(issue)
+        file_path = str(issue.get("file_path", ""))
+        rows.append({
+            "document_id": issue.get("document_id", ""),
+            "document": Path(file_path).name or file_path,
+            "document_type": issue.get("document_type", "unknown"),
+            "issue": issue.get("issue_type", ""),
+            "layer": issue.get("layer", ""),
+            "page_evidence": issue.get("evidence_id", ""),
+            "suggested_action": suggestion["suggested_action"],
+            "needs_accountant": "yes" if suggestion["escalate"] else "no",
+            "rationale": suggestion["suggested_rationale"],
+        })
+    return rows
+
+
 def _source_resolution_payload(issue: dict[str, Any], action: str, reviewer: str, rationale: str) -> dict[str, Any]:
     return {
         "document_id": issue.get("document_id", ""),
@@ -504,35 +541,42 @@ def _render_extraction_fact_summary(artifact_dir: Path) -> None:
 
 
 def _render_source_extraction_review(artifact_dir: Path) -> None:
-    st.header("Source Extraction Review")
-    st.write("Incomplete means a document was detected but some fields are missing, uncertain, or routed to the wrong extraction layer. These items stay visible and block final release until resolved or accepted by the accountant.")
+    st.header("Source issue triage")
+    st.write("The worker groups extraction issues by document, suggests the obvious routing fixes, and escalates only the items that still need accountant judgement.")
     items = _source_review_items(artifact_dir)
     if not items:
         st.success("No source extraction review items found.")
         return
-    st.metric("Review items", len(items))
-    for item in items:
-        title = f"{item['layer']} — {item['document_id']} — {item['issue_type']}"
-        with st.expander(title, expanded=item["issue_type"] == "wrong document-type candidate"):
-            st.write(f"File: `{item['file_path']}`")
-            st.write(f"Document type: `{item['document_type']}`")
-            st.write(f"Category: `{item['category']}`")
-            if item["missing_fields"]:
-                st.write(f"Missing fields: `{item['missing_fields']}`")
-            if item["evidence_id"]:
-                st.write(f"Evidence: `{item['evidence_id']}`")
-            st.warning(f"Recommended action: {item['recommended_action']}")
-            st.caption("Resolution options: upload a better document, reprocess, correct fields manually, mark out of scope, or accept risk with rationale.")
-            st.markdown("**Resolve source issue**")
-            action = st.selectbox("Resolution action", ["", "resolved", "mark_out_of_scope", "accept_risk", "needs_better_document"], key=f"source_action_{item['document_id']}_{item['layer']}")
-            reviewer = st.text_input("Reviewer", key=f"source_reviewer_{item['document_id']}_{item['layer']}")
-            rationale = st.text_area("Rationale", key=f"source_rationale_{item['document_id']}_{item['layer']}")
-            if action:
-                payload = _source_resolution_payload(item, action, reviewer, rationale)
-                st.json(payload)
-                if st.button("Save source issue resolution", key=f"save_source_resolution_{item['document_id']}_{item['layer']}"):
-                    saved_path = _save_source_resolution(artifact_dir, payload)
-                    st.success(f"Saved resolution to {saved_path.name}")
+    rows = _source_issue_triage_rows(items)
+    st.metric("Documents/issues needing triage", len(rows))
+    st.dataframe(rows, use_container_width=True)
+    auto_items = [item for item in items if not _source_issue_resolution_suggestion(item)["escalate"]]
+    escalated_items = [item for item in items if _source_issue_resolution_suggestion(item)["escalate"]]
+    if auto_items and st.button("Save suggested non-blocking routing fixes"):
+        for item in auto_items:
+            suggestion = _source_issue_resolution_suggestion(item)
+            _save_source_resolution(
+                artifact_dir,
+                _source_resolution_payload(
+                    item,
+                    action=suggestion["ui_action"],
+                    reviewer="AI-assisted triage",
+                    rationale=suggestion["suggested_rationale"],
+                ),
+            )
+        st.success(f"Saved {len(auto_items)} suggested non-blocking routing fix(es).")
+    if escalated_items:
+        st.subheader("Escalated items")
+        st.write("These still need accountant review because the worker cannot confidently resolve them from document type and layer alone.")
+        for item in escalated_items:
+            with st.expander(f"{Path(str(item.get('file_path', ''))).name} — {item.get('issue_type', '')}"):
+                st.write(f"File: `{item['file_path']}`")
+                st.write(f"Document type: `{item['document_type']}`")
+                st.write(f"Layer: `{item['layer']}`")
+                st.write(f"Category: `{item['category']}`")
+                if item["evidence_id"]:
+                    st.write(f"Evidence: `{item['evidence_id']}`")
+                st.warning(f"Recommended action: {item['recommended_action']}")
 
 
 def _render_document_inventory_review(artifact_dir: Path) -> None:

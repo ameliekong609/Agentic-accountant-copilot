@@ -31,7 +31,7 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "Release blockers" in source
     assert "apply-accountant-review-workbench" in source
     assert "accept_multiple_files=True" in source
-    assert "Source Extraction Review" in source
+    assert "Source issue triage" in source
     assert "Process documents and build inventory" in source
     assert "Run intake" not in source
     assert "Build document inventory" not in source
@@ -51,7 +51,7 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "Default reviewer" in source
     assert "Default rationale" in source
     assert "Approve all visible CoA accounts" in source
-    assert "Resolve source issue" in source
+    assert "Save suggested non-blocking routing fixes" in source
     assert "Editable CoA review table" in source
     assert "Build reviewed TB and draft statements" in source
     assert _main_tab_labels()[0] == "1 Upload source documents"
@@ -210,6 +210,72 @@ def test_source_review_items_explain_incomplete_and_wrong_type_findings(tmp_path
     assert items[0]["blocks_release"] is True
     assert items[1]["issue_type"] == "incomplete extraction"
     assert "Review distribution" in items[1]["recommended_action"]
+
+
+def test_source_issue_triage_suggests_obvious_wrong_layer_resolution():
+    from accountant_copilot.review_app import _source_issue_resolution_suggestion
+
+    issue = {
+        "layer": "invoice",
+        "document_id": "raw_017",
+        "file_path": "inputs/Confirmation-SELL.PDF",
+        "document_type": "broker_confirmation",
+        "issue_type": "wrong document-type candidate",
+        "evidence_id": "raw_017_page_001",
+    }
+
+    suggestion = _source_issue_resolution_suggestion(issue)
+
+    assert suggestion["suggested_action"] == "route_to_broker_trade"
+    assert suggestion["ui_action"] == "mark_out_of_scope"
+    assert suggestion["escalate"] is False
+    assert suggestion["blocks_release_after_action"] is False
+    assert "broker" in suggestion["suggested_rationale"].lower()
+
+
+def test_source_issue_triage_rows_are_grouped_per_document():
+    from accountant_copilot.review_app import _source_issue_triage_rows
+
+    issues = [
+        {
+            "layer": "invoice",
+            "document_id": "raw_017",
+            "file_path": "inputs/Confirmation-SELL.PDF",
+            "document_type": "broker_confirmation",
+            "issue_type": "wrong document-type candidate",
+            "evidence_id": "raw_017_page_001",
+            "category": "invoice_fact_extraction_incomplete",
+        },
+        {
+            "layer": "distribution/tax",
+            "document_id": "raw_008",
+            "file_path": "inputs/AN3_Payment_Advice.pdf",
+            "document_type": "investment_statement",
+            "issue_type": "incomplete extraction",
+            "evidence_id": "raw_008_page_001",
+            "category": "distribution_tax_fact_extraction_incomplete",
+        },
+    ]
+
+    rows = _source_issue_triage_rows(issues)
+
+    assert rows[0]["document"] == "Confirmation-SELL.PDF"
+    assert rows[0]["suggested_action"] == "route_to_broker_trade"
+    assert rows[0]["needs_accountant"] == "no"
+    assert rows[0]["page_evidence"] == "raw_017_page_001"
+    assert rows[1]["needs_accountant"] == "yes"
+    assert rows[1]["suggested_action"] == "escalate_for_review"
+
+
+def test_source_review_renderer_uses_triage_table_not_one_by_one_selectboxes():
+    import inspect
+    from accountant_copilot.review_app import _render_source_extraction_review
+
+    source = inspect.getsource(_render_source_extraction_review)
+
+    assert "_source_issue_triage_rows" in source
+    assert "st.dataframe" in source
+    assert "st.selectbox" not in source
 
 
 def test_guided_workflow_commands_are_available_for_ui():
