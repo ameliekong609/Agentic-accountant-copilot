@@ -271,6 +271,16 @@ def _workflow_step_button_key(stage_title: str, step_index: int, step: dict[str,
     return f"run_step_{stage_slug}_{step_index}_{step_slug}"
 
 
+def _workflow_output_readiness_text(label: str, outputs_present: int, outputs_total: int) -> str:
+    if outputs_total == 0:
+        return "This step has no separate review file."
+    if outputs_present >= outputs_total:
+        if label.endswith("."):
+            return label
+        return f"{label} is ready to review."
+    return f"{label} is not ready yet."
+
+
 def _workflow_result_summary(step: dict[str, Any], results: list[subprocess.CompletedProcess[str]], outputs_present: int, outputs_total: int) -> dict[str, Any]:
     failures = [result for result in results if result.returncode != 0]
     if failures:
@@ -447,8 +457,13 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifa
             st.caption(f"Human review: {step.get('review_action', 'Continue to the next step unless the status asks for review.')}")
             outputs = [Path(path) for path in step.get("outputs", [])]
             complete_count = sum(path.exists() for path in outputs)
-            st.progress(complete_count / len(outputs) if outputs else 0)
-            st.caption(f"Outputs present: {complete_count}/{len(outputs)}")
+            readiness_text = _workflow_output_readiness_text(step.get("user_output", step["label"]), complete_count, len(outputs))
+            if outputs and complete_count >= len(outputs):
+                st.success(readiness_text)
+            elif outputs:
+                st.warning(readiness_text)
+            else:
+                st.info(readiness_text)
             if step["label"] == "Build document inventory":
                 _render_document_inventory_review(artifact_dir)
             button_key = _workflow_step_button_key(title, idx, step)

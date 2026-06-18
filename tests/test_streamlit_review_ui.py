@@ -254,6 +254,24 @@ def test_workflow_steps_embed_outputs_and_review_actions():
     assert by_label["Build release candidate"]["review_action"] == "Review release package blockers now."
 
 
+def test_workflow_output_readiness_text_is_product_facing():
+    from accountant_copilot.review_app import _workflow_output_readiness_text
+
+    assert _workflow_output_readiness_text("Document inventory", outputs_present=1, outputs_total=1) == "Document inventory is ready to review."
+    assert _workflow_output_readiness_text("Document inventory", outputs_present=0, outputs_total=1) == "Document inventory is not ready yet."
+    assert "Outputs present" not in _workflow_output_readiness_text("Document inventory", outputs_present=1, outputs_total=1)
+    assert "1/1" not in _workflow_output_readiness_text("Document inventory", outputs_present=1, outputs_total=1)
+
+
+def test_workflow_orchestrator_does_not_show_misleading_progress_bar():
+    import inspect
+    from accountant_copilot.review_app import _render_workflow_orchestrator
+
+    source = inspect.getsource(_render_workflow_orchestrator)
+
+    assert "st.progress" not in source
+
+
 def test_workflow_result_summary_hides_raw_stdout_for_good_ux():
     from subprocess import CompletedProcess
     from accountant_copilot.review_app import _workflow_result_summary
