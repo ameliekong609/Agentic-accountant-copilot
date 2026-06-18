@@ -46,6 +46,38 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "Resolve source issue" in source
     assert "Editable CoA review table" in source
     assert "Build reviewed TB and draft statements" in source
+    assert "2 Sequential workflow" in source
+    assert "not a separate batch runner" in source
+    assert "Document inventory review" in source
+
+
+def test_document_inventory_rows_are_reviewable_inline(tmp_path: Path):
+    from accountant_copilot.review_app import _document_inventory_rows
+
+    (tmp_path / "document_inventory.json").write_text(json.dumps({
+        "documents": [
+            {
+                "document_id": "raw_001",
+                "file_path": "inputs/bank.pdf",
+                "document_type": "bank_statement",
+                "evidence_count": 2,
+                "status": "registered",
+                "pages": [{"page": "1"}, {"page": "2"}],
+            }
+        ]
+    }))
+
+    rows = _document_inventory_rows(tmp_path)
+
+    assert rows == [{
+        "document_id": "raw_001",
+        "file_name": "bank.pdf",
+        "document_type": "bank_statement",
+        "pages": 2,
+        "evidence_count": 2,
+        "status": "registered",
+        "review": "looks_ok",
+    }]
 
 
 def test_dashboard_summary_surfaces_tb_draft_and_release_status(tmp_path: Path):

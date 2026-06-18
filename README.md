@@ -541,7 +541,7 @@ The Streamlit app is the product-facing workflow shell:
 
 1. Set/open engagement details and review the status dashboard.
 2. Upload source documents.
-3. Run workflow steps one at a time. After each click, the same workflow screen tells the user what output was produced and whether to review before continuing. The later review screens remain as detail workspaces, not the primary navigation path.
+3. Follow **2 Sequential workflow** one step at a time. This screen is the primary path — not a batch runner. After each click, it shows the business output, inline review where available (starting with document inventory), and whether to continue.
 4. Review source extraction issues such as incomplete fields or wrong document-type candidates, stage resolution actions, and save them to `source_issue_resolutions.json` for audit/review.
 5. Review the post-journal trial balance and internal draft statements.
 6. Complete accountant review decisions with reviewer/rationale defaults, editable CoA review table, and deterministic apply controls.

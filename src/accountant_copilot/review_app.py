@@ -343,6 +343,23 @@ def _final_package_preview(artifact_dir: Path) -> list[dict[str, Any]]:
     return [{"label": label, "kind": kind, "path": path} for label, kind, path in candidates if path.exists()]
 
 
+def _document_inventory_rows(artifact_dir: Path) -> list[dict[str, Any]]:
+    inventory = _load_json(artifact_dir / "document_inventory.json", {"documents": []})
+    rows: list[dict[str, Any]] = []
+    for doc in inventory.get("documents", []):
+        file_path = str(doc.get("file_path", ""))
+        rows.append({
+            "document_id": doc.get("document_id", ""),
+            "file_name": Path(file_path).name or file_path,
+            "document_type": doc.get("document_type", "unknown"),
+            "pages": len(doc.get("pages", [])),
+            "evidence_count": doc.get("evidence_count", 0),
+            "status": doc.get("status", "unknown"),
+            "review": "looks_ok",
+        })
+    return rows
+
+
 def _coa_review_rows(workbench: dict[str, Any]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for account in workbench.get("sections", {}).get("coa_accounts", []):
@@ -389,9 +406,19 @@ def _render_source_extraction_review(artifact_dir: Path) -> None:
                     st.success(f"Saved resolution to {saved_path.name}")
 
 
-def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path) -> None:
-    st.header("Guided workflow")
-    st.write("Click one step at a time. After each step finishes, this screen tells you what output was produced and whether a human review is needed before continuing.")
+def _render_document_inventory_review(artifact_dir: Path) -> None:
+    rows = _document_inventory_rows(artifact_dir)
+    if not rows:
+        st.info("Document inventory review will appear here after this step produces an inventory.")
+        return
+    st.markdown("**Document inventory review**")
+    st.write("Confirm the detected document list before continuing to extraction. Update the review column if a document needs attention.")
+    st.data_editor(rows, use_container_width=True, key="inline_document_inventory_review")
+
+
+def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifact_dir: Path) -> None:
+    st.header("Sequential workflow")
+    st.write("This is the working sequence, not a separate batch runner. Click one step, review its output here, then continue to the next step.")
     for idx, step in enumerate(steps, start=1):
         with st.expander(f"{idx}. {step['label']}", expanded=idx <= 3):
             st.write(step["description"])
@@ -401,6 +428,8 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path) -> Non
             complete_count = sum(path.exists() for path in outputs)
             st.progress(complete_count / len(outputs) if outputs else 0)
             st.caption(f"Outputs present: {complete_count}/{len(outputs)}")
+            if step["label"] == "Build document inventory":
+                _render_document_inventory_review(artifact_dir)
             if st.button(step["label"], key=f"run_step_{idx}"):
                 results = _run_step_command(step["command"], cwd)
                 refreshed_outputs = [Path(path) for path in step.get("outputs", [])]
@@ -409,6 +438,8 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path) -> Non
                 if summary["status"] == "Done":
                     st.success(summary["message"])
                     st.info(f"Output ready: {step.get('user_output', 'This step produced its expected outputs.')}")
+                    if step["label"] == "Build document inventory":
+                        _render_document_inventory_review(artifact_dir)
                     st.warning(f"Review now: {step.get('review_action', 'Continue to the next step if no review is needed.')}")
                 elif summary["status"] == "Check outputs":
                     st.warning(summary["message"])
@@ -619,7 +650,7 @@ def main() -> None:
     setup_tab, upload_tab, workflow_tab, source_review_tab, tb_tab, draft_tab, review_tab, artifacts_tab, final_tab, apply_tab = st.tabs([
         "0 Engagement setup",
         "1 Upload source documents",
-        "2 Run workflow",
+        "2 Sequential workflow",
         "3 Source Extraction Review",
         "4 Reviewed Trial Balance",
         "5 Draft Statements",
@@ -649,7 +680,7 @@ def main() -> None:
             st.code(f"PYTHONPATH=src python3.11 -m accountant_copilot.cli ingest-raw-inputs --input-dir {input_dir} --state {state_path}")
 
     with workflow_tab:
-        _render_workflow_orchestrator(workflow_steps, repo_root)
+        _render_workflow_orchestrator(workflow_steps, repo_root, artifact_dir)
 
     with source_review_tab:
         _render_source_extraction_review(artifact_dir)
