@@ -22,3 +22,15 @@ Current local inventory after copy:
 - CSV support file: 1
 
 The `inputs/` folder is intentionally ignored by `.gitignore` to avoid committing client data.
+
+## Rebuild local review workspace
+
+Use the Turing setup command from this repo root:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli setup-turing-workspace \
+  --input-dir inputs \
+  --output-dir outputs/turing_financial_statement_setup
+```
+
+The command rebuilds derived review artifacts from raw local inputs and writes a `SETUP_RESULTS.md` summary. Open findings and failed verifier statuses are expected until accountant review decisions and parser-hardening work clear them.
