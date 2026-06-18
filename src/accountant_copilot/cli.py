@@ -3031,6 +3031,85 @@ def _import_trial_balance_command(args: argparse.Namespace) -> int:
     return 0 if blockers == 0 else 1
 
 
+_PRIOR_STATEMENT_ACCOUNT_SPECS = [
+    ("Distributions Received", "income", "Revenue"),
+    ("Dividends Received", "income", "Revenue"),
+    ("Interest Income", "income", "Revenue"),
+    ("Accounting Fees", "expense", "Expenses"),
+    ("Bank Fees", "expense", "Expenses"),
+    ("Filing Fees", "expense", "Expenses"),
+    ("Investment Expenses", "expense", "Expenses"),
+    ("Cash at Bank CBA0700", "asset", "Cash and Cash Equivalents"),
+    ("Cash at Bank WBC8243", "asset", "Cash and Cash Equivalents"),
+    ("Hub24 Cash Account", "asset", "Cash and Cash Equivalents"),
+    ("Investments ANZ Capital Notes", "asset", "Investments"),
+    ("EVP Fund III", "asset", "Investments"),
+    ("Newmark Bourke St Mall Trust", "asset", "Investments"),
+    ("Spire Branford Castle US Private Equity Fund II", "asset", "Investments"),
+    ("Accrued expenses", "liability", "Current Liabilities"),
+    ("Unpaid Present Entitlement", "liability", "Beneficiary Accounts"),
+    ("Unsecured Loan", "liability", "Non Current Liabilities"),
+]
+
+
+def _prior_statement_account_code(index: int, account_type: str) -> str:
+    prefix = {"asset": "1", "liability": "2", "income": "4", "expense": "6"}.get(account_type, "9")
+    return f"{prefix}{index:03d}"
+
+
+def _extract_prior_statement_accounts(state: EngagementState) -> list[ChartAccount]:
+    accounts: list[ChartAccount] = []
+    seen_names: set[str] = set()
+    evidence_items = [item for item in state.evidence if item.source_type == "prior_year_financial_statements"]
+    for evidence in evidence_items:
+        quote = " ".join((evidence.quote or "").split())
+        for name, account_type, group in _PRIOR_STATEMENT_ACCOUNT_SPECS:
+            if name in seen_names or not re.search(re.escape(name), quote, re.IGNORECASE):
+                continue
+            match = re.search(rf"{re.escape(name)}\s+(?P<amount>-?\d[\d,]*(?:\.\d{{2}})?|-)", quote, re.IGNORECASE)
+            amount = _clean_money_amount(match.group("amount")) if match and match.group("amount") != "-" else "0.00"
+            code = _prior_statement_account_code(len(accounts) + 1, account_type)
+            accounts.append(ChartAccount(account_id=f"prior_acct_{code}", code=code, name=name, type=account_type, presentation_group=group, opening_balance=amount or "0.00", source_evidence_refs=[evidence.evidence_id]))
+            seen_names.add(name)
+    return accounts
+
+
+def _format_prior_statement_coa_import(payload: dict) -> str:
+    lines = [f"# Prior Statement CoA Import — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend([f"- Accounts imported: {summary['accounts_imported']}", f"- Approved automatically: {summary['approved']}", ""])
+    if payload["accounts"]:
+        lines.append("## Imported accounts pending review")
+        for account in payload["accounts"]:
+            lines.extend([f"- {account['code']} {account['name']}", f"  - Type: {account['type']}", f"  - Group: {account['presentation_group']}", f"  - Opening balance: {account['opening_balance']}", f"  - Evidence: {', '.join(account.get('source_evidence_refs', []))}"])
+    if payload["findings"]:
+        lines.extend(["", "## Findings needing review"])
+        for finding in payload["findings"]:
+            lines.extend([f"- {finding['category']}", f"  - Action: {finding['recommended_action']}"])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _import_coa_from_prior_statements_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    accounts = _extract_prior_statement_accounts(state)
+    findings: list[dict] = []
+    if not accounts:
+        findings.append({"category": "prior_statement_coa_not_extracted", "recommended_action": "Review prior-year financial statement evidence or import a trial balance CSV before CoA mapping."})
+    state.chart_accounts = [account for account in state.chart_accounts if not account.account_id.startswith("prior_acct_")]
+    state.chart_accounts.extend(accounts)
+    state.coa_review_required = True
+    state.coa_review_status = "pending_review"
+    save_engagement_state(state_path, state)
+    payload = {"engagement_id": state.engagement_id, "entity_name": state.entity_name, "accounts": [account.model_dump() for account in accounts], "findings": findings, "summary": {"accounts_imported": len(accounts), "findings": len(findings), "approved": 0}}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_prior_statement_coa_import(payload))
+    output.with_suffix(".json").write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Imported prior statement CoA accounts → {output}")
+    return 0 if accounts and not findings else 1
+
+
 def _render_xlsx_statements_command(args: argparse.Namespace) -> int:
     state_path = Path(args.state)
     state = load_engagement_state(state_path)
@@ -3632,6 +3711,14 @@ def build_parser() -> argparse.ArgumentParser:
     tb_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     tb_parser.add_argument("--trial-balance-csv", required=True)
     tb_parser.set_defaults(func=_import_trial_balance_command)
+
+    prior_coa_parser = subparsers.add_parser(
+        "import-coa-from-prior-statements",
+        help="Import candidate CoA accounts from prior-year financial statement evidence for accountant review.",
+    )
+    prior_coa_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    prior_coa_parser.add_argument("--output", default="outputs/prior_statement_coa_import.md")
+    prior_coa_parser.set_defaults(func=_import_coa_from_prior_statements_command)
 
     xlsx_parser = subparsers.add_parser(
         "render-xlsx-statements",
