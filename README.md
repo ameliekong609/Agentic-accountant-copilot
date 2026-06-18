@@ -505,6 +505,27 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-final-release-manifes
   --release-candidate outputs/release_candidate/release_candidate_manifest.json \
   --output outputs/final_release_manifest.json
 
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-accountant-review-workbench \
+  --state outputs/engagement_state.json \
+  --artifact-dir outputs \
+  --output outputs/accountant_review_workbench.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-accountant-review-workbench \
+  --state outputs/engagement_state.json \
+  --workbench outputs/accountant_review_workbench.json \
+  --artifact-dir outputs \
+  --output outputs/applied_accountant_review_workbench.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli explain-release-blockers \
+  --state outputs/engagement_state.json \
+  --artifact-dir outputs \
+  --output outputs/release_blockers.md
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-review-ui-bundle \
+  --state outputs/engagement_state.json \
+  --artifact-dir outputs \
+  --output-dir outputs/review_ui_bundle
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \
   --facts outputs/bank_statement_facts.json \
   --output outputs/bank_continuity.md

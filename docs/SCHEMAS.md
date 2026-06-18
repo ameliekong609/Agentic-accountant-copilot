@@ -247,3 +247,11 @@ Review packets now include `journal_tb_impact.md`, summarising CoA status, linke
 `verify-release-candidate` checks release candidate hashes and reports missing artifacts or `hash_mismatch` findings when files are changed after packaging.
 
 `export-final-release-manifest` ties final release to a verified release candidate plus final sign-off, and blocks stale-state or tampered-artifact release.
+
+`export-accountant-review-workbench` creates one accountant-facing JSON/markdown workbench for pending CoA accounts, journal decisions, draft statement approval, and final sign-off. All decisions default blank and require reviewer/rationale before apply.
+
+`apply-accountant-review-workbench` applies filled workbench decisions safely: blank decisions are ignored, unknown IDs fail, journal approvals require resolved offsets, and decisions are persisted to engagement state.
+
+`explain-release-blockers` exports markdown/JSON blockers grouped by control layer: source evidence, CoA, journal, statement, release candidate, and final sign-off.
+
+`export-review-ui-bundle` writes a read-only JSON bundle for local review UI use, including the workbench, release blockers, key artifacts, and state summary. It never applies approvals.

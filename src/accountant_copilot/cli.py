@@ -2656,6 +2656,264 @@ def _export_final_release_manifest_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_accountant_review_workbench(state: EngagementState, artifact_dir: Path) -> dict:
+    draft_path = artifact_dir / "draft_statements" / "draft_statements.json"
+    draft = json.loads(draft_path.read_text()) if draft_path.exists() else {}
+    return {
+        "engagement_id": state.engagement_id,
+        "entity_name": state.entity_name,
+        "artifact_dir": str(artifact_dir),
+        "sections": {
+            "coa_accounts": [
+                {
+                    "account_id": account.account_id,
+                    "code": account.code,
+                    "name": account.name,
+                    "type": account.type,
+                    "presentation_group": account.presentation_group,
+                    "opening_balance": account.opening_balance,
+                    "status": account.status,
+                    "action": "",
+                    "approved_by": "",
+                    "rationale": "",
+                }
+                for account in sorted(state.chart_accounts, key=lambda item: item.account_id)
+                if account.status != "approved"
+            ],
+            "journal_decisions": [
+                {
+                    "adjustment_id": proposal.adjustment_id,
+                    "description": proposal.description,
+                    "date": proposal.date,
+                    "debit_account": proposal.debit_account,
+                    "credit_account": proposal.credit_account,
+                    "amount": proposal.amount,
+                    "status": proposal.status,
+                    "source_evidence_refs": proposal.source_evidence_refs,
+                    "action": "",
+                    "offset_account_id": "",
+                    "approved_by": "",
+                    "rationale": "",
+                }
+                for proposal in sorted(state.adjustment_proposals, key=lambda item: item.adjustment_id)
+                if proposal.status != "approved"
+            ],
+            "draft_statement_review": {
+                "draft_artifact": str(draft_path) if draft_path.exists() else "",
+                "draft_sha256": _file_sha256(draft_path) if draft_path.exists() else "",
+                "draft_status": draft.get("status", "missing"),
+                "draft_findings": len(draft.get("findings", [])) if isinstance(draft.get("findings", []), list) else 0,
+                "decision": {"action": "", "approved_by": "", "rationale": ""},
+            },
+            "final_signoff": {"action": "", "approved_by": "", "rationale": "", "release_candidate_manifest": str(artifact_dir / "release_candidate" / "release_candidate_manifest.json")},
+        },
+        "artifact_links": {
+            "review_packet": str(artifact_dir / "review_packet"),
+            "post_journal_trial_balance": str(artifact_dir / "post_journal_trial_balance.json"),
+            "statement_line_mapping": str(artifact_dir / "statement_line_mapping.json"),
+            "draft_statements": str(draft_path),
+            "release_candidate": str(artifact_dir / "release_candidate" / "release_candidate_manifest.json"),
+        },
+    }
+
+
+def _format_accountant_review_workbench(payload: dict) -> str:
+    sections = payload["sections"]
+    lines = [f"# Accountant Review Workbench — {payload['entity_name']}", ""]
+    lines.extend(["## CoA accounts", f"- Pending accounts: {len(sections['coa_accounts'])}"])
+    for item in sections["coa_accounts"]:
+        lines.append(f"- {item['account_id']} {item['code']} {item['name']} status={item['status']}")
+    lines.extend(["", "## Journal decisions", f"- Pending journals: {len(sections['journal_decisions'])}"])
+    for item in sections["journal_decisions"]:
+        lines.append(f"- {item['adjustment_id']} DR {item['debit_account']} / CR {item['credit_account']} amount={item['amount']}")
+    draft = sections["draft_statement_review"]
+    lines.extend(["", "## Draft statement review", f"- Draft status: {draft['draft_status']}", f"- Draft findings: {draft['draft_findings']}"])
+    lines.extend(["", "## Required fields", "- action: approve/reject where applicable", "- approved_by", "- rationale", "- offset_account_id for journal approvals with pending_review_offset"])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_accountant_review_workbench_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    artifact_dir = Path(args.artifact_dir)
+    payload = _build_accountant_review_workbench(state, artifact_dir)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    output.with_suffix(".md").write_text(_format_accountant_review_workbench(payload))
+    print(f"Exported accountant review workbench → {output}")
+    return 0
+
+
+def _require_review_fields(item: dict, label: str) -> tuple[str, str]:
+    if not item.get("approved_by"):
+        _usage_error(f"{label} requires approved_by")
+    if not item.get("rationale"):
+        _usage_error(f"{label} requires rationale")
+    return str(item["approved_by"]), str(item["rationale"])
+
+
+def _apply_accountant_review_workbench_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    artifact_dir = Path(args.artifact_dir)
+    payload = json.loads(Path(args.workbench).read_text())
+    if payload.get("engagement_id") not in {None, state.engagement_id}:
+        _usage_error("workbench engagement_id does not match state")
+    account_by_id = {account.account_id: account for account in state.chart_accounts}
+    proposal_by_id = {proposal.adjustment_id: proposal for proposal in state.adjustment_proposals}
+    applied: list[dict] = []
+    sections = payload.get("sections", {})
+    for item in sections.get("coa_accounts", []):
+        action = item.get("action")
+        if not action:
+            continue
+        if action not in {"approve", "reject"}:
+            _usage_error(f"invalid CoA action for {item.get('account_id')}: {action}")
+        account = account_by_id.get(item.get("account_id"))
+        if account is None:
+            _usage_error(f"Unknown account_id: {item.get('account_id')}")
+        approved_by, rationale = _require_review_fields(item, f"CoA decision for {account.account_id}")
+        account.status = "approved" if action == "approve" else "rejected"
+        selected = "approve_coa" if action == "approve" else "reject_coa"
+        decision = AccountantDecision(decision_id=f"decision_{selected}_{len(state.decisions) + 1:04d}", question=f"{selected} {account.account_id}?", selected_option=selected, rationale=rationale, status=DecisionStatus.APPROVED, approved_by=approved_by, evidence_refs=account.source_evidence_refs)
+        state.decisions.append(decision)
+        applied.append({"section": "coa_accounts", "id": account.account_id, "action": action, "decision_id": decision.decision_id})
+    if state.chart_accounts and not [account for account in state.chart_accounts if account.status != "approved"]:
+        state.coa_review_status = "approved"
+    for item in sections.get("journal_decisions", []):
+        action = item.get("action")
+        if not action:
+            continue
+        if action not in {"approve", "reject"}:
+            _usage_error(f"invalid journal action for {item.get('adjustment_id')}: {action}")
+        proposal = proposal_by_id.get(item.get("adjustment_id"))
+        if proposal is None:
+            _usage_error(f"Unknown adjustment_id: {item.get('adjustment_id')}")
+        approved_by, rationale = _require_review_fields(item, f"journal decision for {proposal.adjustment_id}")
+        if action == "approve" and "pending_review_offset" in {proposal.debit_account, proposal.credit_account}:
+            offset = item.get("offset_account_id")
+            if not offset:
+                _usage_error(f"journal decision for {proposal.adjustment_id} requires offset_account_id before approval")
+            if offset not in account_by_id:
+                _usage_error(f"Unknown offset_account_id: {offset}")
+            if proposal.debit_account == "pending_review_offset":
+                proposal.debit_account = offset
+            if proposal.credit_account == "pending_review_offset":
+                proposal.credit_account = offset
+        proposal.status = "approved" if action == "approve" else "rejected"
+        selected = "approve_journal" if action == "approve" else "reject_journal"
+        decision = AccountantDecision(decision_id=f"decision_{selected}_{len(state.decisions) + 1:04d}", question=f"{selected} {proposal.adjustment_id}?", selected_option=selected, rationale=rationale, status=DecisionStatus.APPROVED, approved_by=approved_by, evidence_refs=proposal.source_evidence_refs)
+        state.decisions.append(decision)
+        proposal.decision_id = decision.decision_id
+        applied.append({"section": "journal_decisions", "id": proposal.adjustment_id, "action": action, "decision_id": decision.decision_id})
+    if state.adjustment_proposals and not [proposal for proposal in state.adjustment_proposals if proposal.status != "approved"]:
+        state.adjustment_review_status = "approved"
+    draft_section = sections.get("draft_statement_review", {})
+    draft_decision = draft_section.get("decision", {}) if isinstance(draft_section, dict) else {}
+    if draft_decision.get("action"):
+        draft_path = Path(draft_section.get("draft_artifact") or artifact_dir / "draft_statements" / "draft_statements.json")
+        draft = json.loads(draft_path.read_text())
+        if draft_section.get("draft_sha256") and draft_section["draft_sha256"] != _file_sha256(draft_path):
+            _usage_error("Draft statement artifact hash does not match workbench")
+        if draft_decision["action"] not in {"approve", "reject"}:
+            _usage_error(f"invalid draft statement action: {draft_decision['action']}")
+        approved_by, rationale = _require_review_fields(draft_decision, "draft statement decision")
+        if draft_decision["action"] == "approve" and draft.get("findings"):
+            _usage_error("Cannot approve draft statements while draft findings remain")
+        selected = "approve_draft_statements" if draft_decision["action"] == "approve" else "reject_draft_statements"
+        decision = AccountantDecision(decision_id=f"decision_{selected}_{len(state.decisions) + 1:04d}", question="Approve internal-review draft statements?", selected_option=selected, rationale=rationale, status=DecisionStatus.APPROVED, approved_by=approved_by, evidence_refs=[str(draft_path), _file_sha256(draft_path)])
+        state.decisions.append(decision)
+        applied.append({"section": "draft_statement_review", "id": str(draft_path), "action": draft_decision["action"], "decision_id": decision.decision_id})
+    final_section = sections.get("final_signoff", {})
+    if isinstance(final_section, dict) and final_section.get("action"):
+        if final_section["action"] != "approve":
+            _usage_error(f"invalid final signoff action: {final_section['action']}")
+        approved_by, rationale = _require_review_fields(final_section, "final signoff")
+        decision = AccountantDecision(decision_id=f"decision_final_signoff_{len(state.decisions) + 1:04d}", question="Final release sign-off?", selected_option="final_signoff", rationale=rationale, status=DecisionStatus.APPROVED, approved_by=approved_by, evidence_refs=[final_section.get("release_candidate_manifest", "")])
+        state.decisions.append(decision)
+        applied.append({"section": "final_signoff", "id": "final_signoff", "action": "approve", "decision_id": decision.decision_id})
+    save_engagement_state(state_path, state)
+    output_payload = {"engagement_id": state.engagement_id, "summary": {"applied": len(applied)}, "applied_decisions": applied, "inspection": inspect_engagement(state)}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(output_payload, indent=2, sort_keys=True))
+    print(f"Applied {len(applied)} accountant review workbench decisions → {output}")
+    return 0
+
+
+def _collect_release_blockers(state: EngagementState, artifact_dir: Path) -> list[dict]:
+    blockers: list[dict] = []
+    if state.coa_review_status != "approved" or [account for account in state.chart_accounts if account.status != "approved"]:
+        blockers.append({"category": "coa", "artifact": "engagement_state.chart_accounts", "message": "Chart of accounts is not fully approved.", "required_action": "Approve or reject pending CoA accounts with reviewer and rationale."})
+    if [proposal for proposal in state.adjustment_proposals if proposal.status != "approved"]:
+        blockers.append({"category": "journal", "artifact": "engagement_state.adjustment_proposals", "message": "Journal proposals remain unresolved.", "required_action": "Approve/reject journals and resolve pending_review_offset accounts."})
+    draft_path = artifact_dir / "draft_statements" / "draft_statements.json"
+    if not draft_path.exists() or not _draft_statement_review_decision(state):
+        blockers.append({"category": "statement", "artifact": str(draft_path), "message": "Draft statements are not accountant-approved.", "required_action": "Review and approve/reject draft statements."})
+    rc_path = artifact_dir / "release_candidate" / "release_candidate_manifest.json"
+    if not rc_path.exists():
+        blockers.append({"category": "release_candidate", "artifact": str(rc_path), "message": "Release candidate package has not been built.", "required_action": "Build release candidate after approvals are complete."})
+    else:
+        manifest = json.loads(rc_path.read_text())
+        for name, info in manifest.get("artifacts", {}).items():
+            path = Path(info.get("path", ""))
+            if not path.exists() or _file_sha256(path) != info.get("sha256"):
+                blockers.append({"category": "release_candidate", "artifact": name, "message": "Release candidate artifact is missing or hash-mismatched.", "required_action": "Rebuild or verify release candidate before final release."})
+                break
+    if not _final_signoff_decision(state):
+        blockers.append({"category": "final_signoff", "artifact": "engagement_state.decisions", "message": "Final sign-off is missing.", "required_action": "Record final sign-off after verified release candidate review."})
+    open_blockers = [item for item in state.exceptions if getattr(item, "is_blocking", False)]
+    if open_blockers:
+        blockers.append({"category": "source_evidence", "artifact": "engagement_state.exceptions", "message": f"{len(open_blockers)} blocking source/control exceptions remain.", "required_action": "Resolve or accept-risk blocking exceptions before release."})
+    return blockers
+
+
+def _format_release_blockers(payload: dict) -> str:
+    lines = [f"# Release Blockers — {payload['entity_name']}", "", f"- Blockers: {payload['summary']['blockers']}", ""]
+    if payload["blockers"]:
+        for item in payload["blockers"]:
+            lines.extend([f"## {item['category']}", f"- Artifact: {item['artifact']}", f"- Issue: {item['message']}", f"- Required action: {item['required_action']}", ""])
+    else:
+        lines.append("No release blockers detected by this check.")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _explain_release_blockers_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    artifact_dir = Path(args.artifact_dir)
+    blockers = _collect_release_blockers(state, artifact_dir)
+    payload = {"engagement_id": state.engagement_id, "entity_name": state.entity_name, "blockers": blockers, "summary": {"blockers": len(blockers)}}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_release_blockers(payload))
+    output.with_suffix(".json").write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported release blockers → {output}")
+    return 0 if not blockers else 1
+
+
+def _export_review_ui_bundle_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    artifact_dir = Path(args.artifact_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    workbench = _build_accountant_review_workbench(state, artifact_dir)
+    blockers_payload = {"engagement_id": state.engagement_id, "entity_name": state.entity_name, "blockers": _collect_release_blockers(state, artifact_dir)}
+    artifacts = {}
+    for name, rel in {
+        "post_journal_trial_balance": "post_journal_trial_balance.json",
+        "statement_line_mapping": "statement_line_mapping.json",
+        "draft_statements": "draft_statements/draft_statements.json",
+        "release_candidate": "release_candidate/release_candidate_manifest.json",
+    }.items():
+        path = artifact_dir / rel
+        artifacts[name] = json.loads(path.read_text()) if path.exists() and path.suffix == ".json" else None
+    bundle = {"engagement_id": state.engagement_id, "entity_name": state.entity_name, "workbench": workbench, "release_blockers": blockers_payload, "artifacts": artifacts, "state_summary": inspect_engagement(state)}
+    (output_dir / "review_ui_bundle.json").write_text(json.dumps(bundle, indent=2, sort_keys=True))
+    (output_dir / "README.md").write_text(f"# Review UI Bundle — {state.entity_name}\n\nThis bundle is read-only review data. Apply approvals with `apply-accountant-review-workbench`.\n")
+    print(f"Exported review UI bundle → {output_dir}")
+    return 0
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -3202,6 +3460,9 @@ def _format_journal_tb_impact(state: EngagementState, state_path: Path) -> str:
         ("Applied draft statement review", "applied_draft_statement_review.json"),
         ("Release candidate manifest", "release_candidate/release_candidate_manifest.json"),
         ("Final release manifest", "final_release_manifest.json"),
+        ("Accountant review workbench", "accountant_review_workbench.md"),
+        ("Release blockers", "release_blockers.md"),
+        ("Review UI bundle", "review_ui_bundle/README.md"),
     ]
     lines.append("## Linked artifacts")
     found = False
@@ -4789,6 +5050,43 @@ def build_parser() -> argparse.ArgumentParser:
     final_release_parser.add_argument("--release-candidate", required=True)
     final_release_parser.add_argument("--output", required=True)
     final_release_parser.set_defaults(func=_export_final_release_manifest_command)
+
+    accountant_workbench_parser = subparsers.add_parser(
+        "export-accountant-review-workbench",
+        help="Export unified accountant review workbench for CoA, journals, draft statements, and final sign-off.",
+    )
+    accountant_workbench_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    accountant_workbench_parser.add_argument("--artifact-dir", default="outputs")
+    accountant_workbench_parser.add_argument("--output", required=True)
+    accountant_workbench_parser.set_defaults(func=_export_accountant_review_workbench_command)
+
+    apply_accountant_workbench_parser = subparsers.add_parser(
+        "apply-accountant-review-workbench",
+        help="Apply decisions from unified accountant review workbench.",
+    )
+    apply_accountant_workbench_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    apply_accountant_workbench_parser.add_argument("--workbench", required=True)
+    apply_accountant_workbench_parser.add_argument("--artifact-dir", default="outputs")
+    apply_accountant_workbench_parser.add_argument("--output", required=True)
+    apply_accountant_workbench_parser.set_defaults(func=_apply_accountant_review_workbench_command)
+
+    release_blockers_parser = subparsers.add_parser(
+        "explain-release-blockers",
+        help="Export plain-English release blockers grouped by control layer.",
+    )
+    release_blockers_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    release_blockers_parser.add_argument("--artifact-dir", default="outputs")
+    release_blockers_parser.add_argument("--output", required=True)
+    release_blockers_parser.set_defaults(func=_explain_release_blockers_command)
+
+    review_ui_bundle_parser = subparsers.add_parser(
+        "export-review-ui-bundle",
+        help="Export read-only review UI data bundle for the accountant workbench.",
+    )
+    review_ui_bundle_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    review_ui_bundle_parser.add_argument("--artifact-dir", default="outputs")
+    review_ui_bundle_parser.add_argument("--output-dir", required=True)
+    review_ui_bundle_parser.set_defaults(func=_export_review_ui_bundle_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",
