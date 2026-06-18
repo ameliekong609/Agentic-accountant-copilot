@@ -39,7 +39,11 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "Build review packet" in source
     assert "Build release candidate" in source
     assert "Final export" in source
-    assert "Workspace details" in source
+    assert "Workspace details" not in source
+    assert "Advanced technical paths" not in source
+    assert "Technical" not in source
+    assert "State path" not in source
+    assert "Artifact directory" not in source
     assert "Status dashboard" in source
     assert "Reviewed Trial Balance" in source
     assert "Draft Statements" in source
@@ -344,15 +348,27 @@ def test_workflow_result_summary_hides_raw_stdout_for_good_ux():
     from subprocess import CompletedProcess
     from accountant_copilot.review_app import _workflow_result_summary
 
-    step = {"label": "Process documents and build inventory", "outputs": ["engagement_state.json", "document_inventory.md"]}
+    step = {"label": "Process documents and build inventory", "outputs": ["engagement_state.json", "document_inventory.md"], "user_output": "Document inventory is ready for review."}
     result = CompletedProcess(args=["ingest-raw-inputs"], returncode=0, stdout="very long cli blob", stderr="")
 
     summary = _workflow_result_summary(step, [result], outputs_present=2, outputs_total=2)
 
     assert summary["status"] == "Done"
-    assert summary["message"] == "Process documents and build inventory finished. 2 of 2 expected outputs are available."
+    assert summary["message"] == "Document inventory is ready for review."
+    assert "2 of 2" not in summary["message"]
+    assert "expected outputs" not in summary["message"]
     assert "cli" not in summary["message"].lower()
     assert summary["show_technical_output"] is False
+
+
+def test_workflow_orchestrator_hides_technical_command_output_from_steps():
+    import inspect
+    from accountant_copilot.review_app import _render_workflow_orchestrator
+
+    source = inspect.getsource(_render_workflow_orchestrator)
+
+    assert "Technical command output" not in source
+    assert "Exit code:" not in source
 
 
 def test_workflow_result_summary_treats_exported_review_findings_as_review_state():
@@ -368,7 +384,7 @@ def test_workflow_result_summary_treats_exported_review_findings_as_review_state
     summary = _workflow_result_summary(step, results, outputs_present=2, outputs_total=2)
 
     assert summary["status"] == "Needs review"
-    assert summary["message"] == "Extract accounting facts finished with review items. Review the output in this stage before continuing."
+    assert summary["message"] == "Review this step output before continuing."
     assert summary["show_technical_output"] is False
 
 

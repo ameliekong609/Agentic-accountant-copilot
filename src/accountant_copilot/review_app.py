@@ -349,25 +349,24 @@ def _workflow_result_summary(step: dict[str, Any], results: list[subprocess.Comp
     if failures and outputs_total and outputs_present >= outputs_total:
         return {
             "status": "Needs review",
-            "message": f"{step['label']} finished with review items. Review the output in this stage before continuing.",
+            "message": step.get("review_action", "Review this step output before continuing."),
             "show_technical_output": False,
         }
     if failures:
         return {
             "status": "Needs attention",
-            "message": f"{step['label']} could not finish. Open technical details below or move to the next tab only after fixing the issue.",
-            "show_technical_output": True,
+            "message": "This step needs attention before continuing.",
+            "show_technical_output": False,
         }
     if outputs_total and outputs_present < outputs_total:
         return {
             "status": "Check outputs",
-            "message": f"{step['label']} ran, but only {outputs_present} of {outputs_total} expected outputs are available.",
-            "show_technical_output": True,
+            "message": "This step ran, but the expected output is not available yet.",
+            "show_technical_output": False,
         }
-    suffix = f" {outputs_present} of {outputs_total} expected outputs are available." if outputs_total else ""
     return {
         "status": "Done",
-        "message": f"{step['label']} finished.{suffix}",
+        "message": step.get("user_output", "This step is complete."),
         "show_technical_output": False,
     }
 
@@ -532,39 +531,12 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifa
                 summary = _workflow_result_summary(step, results, refreshed_count, len(refreshed_outputs))
                 if summary["status"] == "Done":
                     st.success(summary["message"])
-                    st.info(f"Output ready: {step.get('user_output', 'This step produced its expected outputs.')}")
-                    st.warning(f"Review now: {step.get('review_action', 'Continue to the next step if no review is needed.')}")
-                elif summary["status"] == "Needs review":
-                    st.warning(summary["message"])
-                    st.info(f"Review now: {step.get('review_action', 'Review this step output before continuing.')}")
-                elif summary["status"] == "Check outputs":
+                elif summary["status"] in {"Needs review", "Check outputs"}:
                     st.warning(summary["message"])
                 else:
                     st.error(summary["message"])
-                with st.expander("Technical command output", expanded=summary["show_technical_output"]):
-                    for result in results:
-                        st.write(f"Exit code: {result.returncode}")
-                        if result.stdout:
-                            st.code(result.stdout[-4000:])
-                        if result.stderr:
-                            st.error(result.stderr[-4000:])
             if step["label"] == "Process documents and build inventory":
                 _render_document_inventory_review(artifact_dir)
-
-
-def _render_engagement_setup(artifact_dir: Path, state_path: Path, input_dir: Path) -> None:
-    st.header("Workspace details")
-    state = _load_json(state_path, {})
-    col1, col2 = st.columns(2)
-    with col1:
-        st.text_input("Client / entity name", state.get("entity_name", ""), key="setup_entity_name")
-        st.text_input("Entity type", state.get("entity_type", ""), key="setup_entity_type")
-    with col2:
-        st.text_input("Financial year start", state.get("fy_start", ""), key="setup_fy_start")
-        st.text_input("Financial year end", state.get("fy_end", ""), key="setup_fy_end")
-    st.caption("This setup screen is product-facing. Technical paths are kept in the sidebar for now while the local prototype matures.")
-    st.write(f"Input folder: `{input_dir}`")
-    st.write(f"Workspace: `{artifact_dir}`")
 
 
 def _render_status_dashboard(artifact_dir: Path) -> None:
@@ -735,17 +707,6 @@ def main() -> None:
     artifact_dir = Path(_query_param("artifact_dir", app_args.artifact_dir))
     input_dir = Path(_query_param("input_dir", app_args.input_dir))
 
-    with st.sidebar:
-        st.header("Workspace")
-        st.caption("Use the main tabs for normal workflow. Technical paths are advanced settings.")
-        with st.expander("Advanced technical paths", expanded=False):
-            state_path = Path(st.text_input("State path", str(state_path)))
-            artifact_dir = Path(st.text_input("Artifact directory", str(artifact_dir)))
-            input_dir = Path(st.text_input("Upload/input directory", str(input_dir)))
-            st.caption("Use `ingest-raw-inputs` after staging new uploads.")
-        with st.expander("Workspace details", expanded=False):
-            _render_engagement_setup(artifact_dir, state_path, input_dir)
-
     workflow_steps = _workflow_steps(str(input_dir), str(artifact_dir), str(state_path))
     stage_groups = _workflow_stage_groups(workflow_steps)
     upload_tab, intake_tab, extract_tab, match_tab, coa_tab, tb_tab, review_tab, final_tab, artifacts_tab, apply_tab = st.tabs(_main_tab_labels())
@@ -762,8 +723,6 @@ def main() -> None:
                     st.write(str(path))
             else:
                 st.info("No files selected.")
-        with st.expander("Technical intake command", expanded=False):
-            st.code(f"PYTHONPATH=src python3.11 -m accountant_copilot.cli ingest-raw-inputs --input-dir {input_dir} --state {state_path}")
 
     with intake_tab:
         _render_workflow_orchestrator(stage_groups[0]["steps"], repo_root, artifact_dir, stage_groups[0]["title"])
@@ -822,18 +781,12 @@ def main() -> None:
         if st.button("Stage filled workbench for apply") and filled is not None:
             target.write_bytes(filled.getbuffer())
             st.success(f"Staged {target}")
-        with st.expander("Technical apply command", expanded=False):
-            st.code(f"PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-accountant-review-workbench --state {state_path} --workbench {target} --artifact-dir {artifact_dir} --output {artifact_dir / 'applied_accountant_review_workbench.json'}")
-        if st.button("Run apply command"):
+        if st.button("Run apply decisions"):
             result = _run_cli(["apply-accountant-review-workbench", "--state", str(state_path), "--workbench", str(target), "--artifact-dir", str(artifact_dir), "--output", str(artifact_dir / "applied_accountant_review_workbench.json")], repo_root)
-            status = "completed" if result.returncode == 0 else "needs attention"
-            st.write(f"Apply status: {status}")
-            with st.expander("Technical apply output", expanded=result.returncode != 0):
-                st.write(f"Exit code: {result.returncode}")
-                if result.stdout:
-                    st.code(result.stdout)
-                if result.stderr:
-                    st.error(result.stderr)
+            if result.returncode == 0:
+                st.success("Decisions applied.")
+            else:
+                st.error("Decisions could not be applied. Check the uploaded workbench and try again.")
 
 
 if __name__ == "__main__":
