@@ -43,6 +43,9 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "Default reviewer" in source
     assert "Default rationale" in source
     assert "Approve all visible CoA accounts" in source
+    assert "Resolve source issue" in source
+    assert "Editable CoA review table" in source
+    assert "Build reviewed TB and draft statements" in source
 
 
 def test_dashboard_summary_surfaces_tb_draft_and_release_status(tmp_path: Path):
@@ -122,9 +125,30 @@ def test_guided_workflow_commands_are_available_for_ui():
 
     assert labels[:4] == ["Run intake", "Build document inventory", "Extract accounting facts", "Match source facts"]
     assert "Build review packet" in labels
+    assert "Build reviewed TB and draft statements" in labels
     assert "Build release candidate" in labels
     assert "Final export" in labels
     assert all(step["command"] for step in steps)
+
+
+def test_source_resolution_payload_and_coa_table_rows_are_ui_friendly():
+    from accountant_copilot.review_app import _coa_review_rows, _source_resolution_payload
+
+    issue = {
+        "layer": "invoice",
+        "document_id": "raw_017",
+        "file_path": "inputs/Confirmation-SELL.PDF",
+        "issue_type": "wrong document-type candidate",
+        "recommended_action": "Route to broker trade layer.",
+    }
+    payload = _source_resolution_payload(issue, action="mark_out_of_scope", reviewer="Amelie", rationale="Broker confirmation, not invoice")
+    assert payload["document_id"] == "raw_017"
+    assert payload["action"] == "mark_out_of_scope"
+    assert payload["reviewer"] == "Amelie"
+    assert payload["blocks_release"] is False
+
+    rows = _coa_review_rows({"sections": {"coa_accounts": [{"account_id": "a1", "code": "100", "name": "Cash"}]}})
+    assert rows == [{"account_id": "a1", "code": "100", "name": "Cash", "action": "", "approved_by": "", "rationale": ""}]
 
 
 def test_serve_accountant_review_ui_command_is_registered():

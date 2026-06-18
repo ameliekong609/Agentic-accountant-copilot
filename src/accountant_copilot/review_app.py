@@ -189,6 +189,22 @@ def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[
             "outputs": [f"{artifact_dir}/accountant_review_workbench.json", f"{artifact_dir}/release_blockers.json"],
         },
         {
+            "label": "Build reviewed TB and draft statements",
+            "description": "Export reviewed journals, build post-journal TB, preview statement mapping, and render internal-review draft statements.",
+            "command": [
+                ["export-reviewed-journals", "--state", state_path, "--output-dir", f"{artifact_dir}/reviewed_journals"],
+                ["build-post-journal-tb", "--state", state_path, "--reviewed-journals", f"{artifact_dir}/reviewed_journals/reviewed_journals.json", "--output", f"{artifact_dir}/post_journal_trial_balance.md"],
+                ["preview-statement-line-mapping", "--post-journal-tb", f"{artifact_dir}/post_journal_trial_balance.json", "--output", f"{artifact_dir}/statement_line_mapping.md"],
+                ["render-draft-statements-from-tb", "--post-journal-tb", f"{artifact_dir}/post_journal_trial_balance.json", "--mapping", f"{artifact_dir}/statement_line_mapping.json", "--output-dir", f"{artifact_dir}/draft_statements"],
+            ],
+            "outputs": [
+                f"{artifact_dir}/reviewed_journals/reviewed_journals.json",
+                f"{artifact_dir}/post_journal_trial_balance.json",
+                f"{artifact_dir}/statement_line_mapping.json",
+                f"{artifact_dir}/draft_statements/draft_statements.json",
+            ],
+        },
+        {
             "label": "Build release candidate",
             "description": "Package controlled release artifacts after accountant approvals clear blockers.",
             "command": ["build-release-candidate-package", "--state", state_path, "--artifact-dir", artifact_dir, "--output-dir", f"{artifact_dir}/release_candidate"],
@@ -253,6 +269,34 @@ def _source_review_items(artifact_dir: Path) -> list[dict[str, Any]]:
     return items
 
 
+def _source_resolution_payload(issue: dict[str, Any], action: str, reviewer: str, rationale: str) -> dict[str, Any]:
+    return {
+        "document_id": issue.get("document_id", ""),
+        "file_path": issue.get("file_path", ""),
+        "layer": issue.get("layer", ""),
+        "issue_type": issue.get("issue_type", ""),
+        "action": action,
+        "reviewer": reviewer,
+        "rationale": rationale,
+        "recommended_action": issue.get("recommended_action", ""),
+        "blocks_release": action not in {"mark_out_of_scope", "accept_risk", "resolved"},
+    }
+
+
+def _coa_review_rows(workbench: dict[str, Any]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for account in workbench.get("sections", {}).get("coa_accounts", []):
+        rows.append({
+            "account_id": str(account.get("account_id", "")),
+            "code": str(account.get("code", "")),
+            "name": str(account.get("name", "")),
+            "action": str(account.get("action", "")),
+            "approved_by": str(account.get("approved_by", "")),
+            "rationale": str(account.get("rationale", "")),
+        })
+    return rows
+
+
 def _render_source_extraction_review(artifact_dir: Path) -> None:
     st.header("Source Extraction Review")
     st.write("Incomplete means a document was detected but some fields are missing, uncertain, or routed to the wrong extraction layer. These items stay visible and block final release until resolved or accepted by the accountant.")
@@ -273,6 +317,12 @@ def _render_source_extraction_review(artifact_dir: Path) -> None:
                 st.write(f"Evidence: `{item['evidence_id']}`")
             st.warning(f"Recommended action: {item['recommended_action']}")
             st.caption("Resolution options: upload a better document, reprocess, correct fields manually, mark out of scope, or accept risk with rationale.")
+            st.markdown("**Resolve source issue**")
+            action = st.selectbox("Resolution action", ["", "resolved", "mark_out_of_scope", "accept_risk", "needs_better_document"], key=f"source_action_{item['document_id']}_{item['layer']}")
+            reviewer = st.text_input("Reviewer", key=f"source_reviewer_{item['document_id']}_{item['layer']}")
+            rationale = st.text_area("Rationale", key=f"source_rationale_{item['document_id']}_{item['layer']}")
+            if action:
+                st.json(_source_resolution_payload(item, action, reviewer, rationale))
 
 
 def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path) -> None:
@@ -412,6 +462,16 @@ def _render_workbench(workbench: dict[str, Any]) -> dict[str, Any]:
 
     st.subheader("CoA Review")
     coa_accounts = sections.get("coa_accounts", [])
+    coa_rows = _coa_review_rows(edited)
+    if coa_rows:
+        st.markdown("**Editable CoA review table**")
+        edited_rows = st.data_editor(coa_rows, use_container_width=True, key="editable_coa_review_table")
+        account_by_id = {account.get("account_id"): account for account in coa_accounts}
+        for row in edited_rows:
+            account = account_by_id.get(row.get("account_id"))
+            if account is not None:
+                account.update({"action": row.get("action", ""), "approved_by": row.get("approved_by", ""), "rationale": row.get("rationale", "")})
+        st.download_button("Download CoA review rows", json.dumps(edited_rows, indent=2, sort_keys=True), file_name="coa_review_rows.json", mime="application/json")
     if coa_accounts and st.button("Approve all visible CoA accounts"):
         for account in coa_accounts:
             account["action"] = "approve"
