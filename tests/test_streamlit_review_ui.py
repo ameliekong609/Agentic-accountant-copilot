@@ -171,6 +171,21 @@ def test_final_package_preview_prioritizes_statement_and_manifest_artifacts(tmp_
     assert preview[2]["label"] == "Final release manifest"
 
 
+def test_workflow_result_summary_hides_raw_stdout_for_good_ux():
+    from subprocess import CompletedProcess
+    from accountant_copilot.review_app import _workflow_result_summary
+
+    step = {"label": "Run intake", "outputs": ["engagement_state.json", "document_inventory.md"]}
+    result = CompletedProcess(args=["ingest-raw-inputs"], returncode=0, stdout="very long cli blob", stderr="")
+
+    summary = _workflow_result_summary(step, [result], outputs_present=2, outputs_total=2)
+
+    assert summary["status"] == "Done"
+    assert summary["message"] == "Run intake finished. 2 of 2 expected outputs are available."
+    assert "cli" not in summary["message"].lower()
+    assert summary["show_technical_output"] is False
+
+
 def test_serve_accountant_review_ui_command_is_registered():
     result = run_cli("serve-accountant-review-ui", "--help")
     assert result.returncode == 0

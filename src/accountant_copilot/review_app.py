@@ -232,6 +232,28 @@ def _run_step_command(command: Any, cwd: Path) -> list[subprocess.CompletedProce
     return [_run_cli(list(args), cwd) for args in commands]
 
 
+def _workflow_result_summary(step: dict[str, Any], results: list[subprocess.CompletedProcess[str]], outputs_present: int, outputs_total: int) -> dict[str, Any]:
+    failures = [result for result in results if result.returncode != 0]
+    if failures:
+        return {
+            "status": "Needs attention",
+            "message": f"{step['label']} could not finish. Open technical details below or move to the next tab only after fixing the issue.",
+            "show_technical_output": True,
+        }
+    if outputs_total and outputs_present < outputs_total:
+        return {
+            "status": "Check outputs",
+            "message": f"{step['label']} ran, but only {outputs_present} of {outputs_total} expected outputs are available.",
+            "show_technical_output": True,
+        }
+    suffix = f" {outputs_present} of {outputs_total} expected outputs are available." if outputs_total else ""
+    return {
+        "status": "Done",
+        "message": f"{step['label']} finished.{suffix}",
+        "show_technical_output": False,
+    }
+
+
 def _source_documents_by_id(artifact_dir: Path) -> dict[str, dict[str, Any]]:
     state = _load_json(artifact_dir / "engagement_state.json", {})
     return {doc.get("document_id", ""): doc for doc in state.get("source_documents", [])}
@@ -361,10 +383,17 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path) -> Non
             st.caption(f"Outputs present: {complete_count}/{len(outputs)}")
             if st.button(step["label"], key=f"run_step_{idx}"):
                 results = _run_step_command(step["command"], cwd)
-                for result in results:
-                    status = "completed" if result.returncode == 0 else "needs attention"
-                    st.write(f"Step status: {status}")
-                    with st.expander("Technical command output", expanded=result.returncode != 0):
+                refreshed_outputs = [Path(path) for path in step.get("outputs", [])]
+                refreshed_count = sum(path.exists() for path in refreshed_outputs)
+                summary = _workflow_result_summary(step, results, refreshed_count, len(refreshed_outputs))
+                if summary["status"] == "Done":
+                    st.success(summary["message"])
+                elif summary["status"] == "Check outputs":
+                    st.warning(summary["message"])
+                else:
+                    st.error(summary["message"])
+                with st.expander("Technical command output", expanded=summary["show_technical_output"]):
+                    for result in results:
                         st.write(f"Exit code: {result.returncode}")
                         if result.stdout:
                             st.code(result.stdout[-4000:])
