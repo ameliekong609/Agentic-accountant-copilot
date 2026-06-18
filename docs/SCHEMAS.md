@@ -221,3 +221,5 @@ CSV source intake now validates required `date`, `description`, and `amount` col
 `import-coa-from-prior-statements` imports candidate CoA accounts from prior-year financial statement evidence when no trial balance CSV is available. Imported accounts remain `pending_review`, link back to evidence refs, and set CoA review status to pending.
 
 `export-coa-mapping-template` and `apply-coa-mapping-decisions` provide the accountant review round trip for source-fact-to-CoA mappings. Blank templates do not apply decisions; filled decisions require mapping IDs, action, reviewer, and rationale, and persist approved/rejected mapping decisions to engagement state.
+
+`propose-journals` creates pending-review journal proposals only from approved CoA mapping decisions. Each proposal is evidence-linked, uses a `pending_review_offset` side where the accounting treatment still needs review, and starts with `approved=0`; missing accounts become findings instead of forced journals.

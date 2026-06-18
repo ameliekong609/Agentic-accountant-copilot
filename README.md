@@ -441,6 +441,11 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-coa-mapping-decisions 
   --decisions outputs/coa_mapping_decisions_template.json \
   --output outputs/applied_coa_mapping_decisions.json
 
+PYTHONPATH=src python3.11 -m accountant_copilot.cli propose-journals \
+  --state outputs/engagement_state.json \
+  --applied-mappings outputs/applied_coa_mapping_decisions.json \
+  --output outputs/journal_proposals.md
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \
   --facts outputs/bank_statement_facts.json \
   --output outputs/bank_continuity.md

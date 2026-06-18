@@ -2017,7 +2017,18 @@ def _apply_coa_mapping_decisions_command(args: argparse.Namespace) -> int:
             evidence_refs=[ref for ref in mapping.get("evidence_refs", []) if ref],
         )
         state.decisions.append(decision)
-        applied_rows.append({"mapping_id": mapping_id, "action": action, "decision_id": decision.decision_id, "source_fact_type": mapping.get("source_fact_type"), "candidate_account_id": mapping.get("candidate_account_id")})
+        applied_rows.append({
+            "mapping_id": mapping_id,
+            "action": action,
+            "decision_id": decision.decision_id,
+            "source_fact_type": mapping.get("source_fact_type"),
+            "source_evidence_id": mapping.get("source_evidence_id"),
+            "candidate_account_id": mapping.get("candidate_account_id"),
+            "candidate_account_code": mapping.get("candidate_account_code"),
+            "candidate_account_name": mapping.get("candidate_account_name"),
+            "amount": mapping.get("amount"),
+            "evidence_refs": mapping.get("evidence_refs", []),
+        })
     save_engagement_state(state_path, state)
     payload = {"engagement_id": state.engagement_id, "applied_mappings": applied_rows, "summary": {"approved": approved, "rejected": rejected, "applied": len(applied_rows)}}
     output = Path(args.output)
@@ -2025,6 +2036,76 @@ def _apply_coa_mapping_decisions_command(args: argparse.Namespace) -> int:
     output.write_text(json.dumps(payload, indent=2, sort_keys=True))
     print(f"Applied {len(applied_rows)} CoA mapping decisions → {output}")
     return 0
+
+
+def _journal_accounts_for_mapping(account: ChartAccount) -> tuple[str, str]:
+    if account.type in {"expense", "asset"}:
+        return account.account_id, "pending_review_offset"
+    if account.type in {"income", "revenue", "liability", "equity"}:
+        return "pending_review_offset", account.account_id
+    return account.account_id, "pending_review_offset"
+
+
+def _format_journal_proposals(payload: dict) -> str:
+    lines = [f"# Journal Proposals — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend([f"- Proposals created: {summary['proposals_created']}", f"- Blocked mappings: {summary['blocked_mappings']}", f"- Approved automatically: {summary['approved']}", ""])
+    if payload["proposals"]:
+        lines.append("## Proposals pending accountant review")
+        for item in payload["proposals"]:
+            lines.extend([f"- {item['adjustment_id']} [{item['status']}] {item['description']}", f"  - DR {item['debit_account']} / CR {item['credit_account']}", f"  - Amount: {item['amount']}", f"  - Evidence: {', '.join(item.get('source_evidence_refs', []))}"])
+    if payload["findings"]:
+        lines.extend(["", "## Findings needing review"])
+        for item in payload["findings"]:
+            lines.extend([f"- {item['category']}: {item.get('mapping_id')}", f"  - Action: {item['recommended_action']}"])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _propose_journals_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    applied_payload = json.loads(Path(args.applied_mappings).read_text())
+    account_by_id = {account.account_id: account for account in state.chart_accounts}
+    proposals: list[AdjustmentProposal] = []
+    findings: list[dict] = []
+    for item in applied_payload.get("applied_mappings", []):
+        if item.get("action") != "approve":
+            continue
+        account_id = item.get("candidate_account_id")
+        account = account_by_id.get(account_id)
+        if account is None:
+            findings.append({"category": "journal_proposal_account_missing", "mapping_id": item.get("mapping_id"), "candidate_account_id": account_id, "recommended_action": "Resolve or re-approve the CoA mapping before proposing a journal."})
+            continue
+        amount = _clean_money_amount(str(item.get("amount", ""))) or "0.00"
+        debit_account, credit_account = _journal_accounts_for_mapping(account)
+        evidence_refs = []
+        for ref in list(item.get("evidence_refs", [])) + [item.get("source_evidence_id"), item.get("candidate_account_id"), item.get("decision_id")]:
+            if ref and ref not in evidence_refs:
+                evidence_refs.append(ref)
+        adjustment_id = f"journal_{item.get('mapping_id', len(proposals) + 1)}"
+        proposal = AdjustmentProposal(
+            adjustment_id=adjustment_id,
+            description=f"Proposed {item.get('source_fact_type')} journal from approved CoA mapping {item.get('mapping_id')}",
+            debit_account=debit_account,
+            credit_account=credit_account,
+            amount=amount,
+            date=getattr(args, "date", None) or state.fy_end,
+            source_evidence_refs=evidence_refs,
+            status="pending_review",
+        )
+        proposals.append(proposal)
+    state.adjustment_proposals = [item for item in state.adjustment_proposals if not item.adjustment_id.startswith("journal_map_") and not item.adjustment_id.startswith("journal_map") and not item.adjustment_id.startswith("journal_")]
+    state.adjustment_proposals.extend(proposals)
+    if proposals:
+        state.adjustment_review_status = "pending_review"
+    save_engagement_state(state_path, state)
+    payload = {"engagement_id": state.engagement_id, "entity_name": state.entity_name, "proposals": [proposal.model_dump() for proposal in proposals], "findings": findings, "summary": {"proposals_created": len(proposals), "blocked_mappings": len(findings), "approved": 0}}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_journal_proposals(payload))
+    output.with_suffix(".json").write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported journal proposals → {output}")
+    return 1 if proposals or findings else 0
 
 
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
@@ -3964,6 +4045,16 @@ def build_parser() -> argparse.ArgumentParser:
     coa_mapping_apply_parser.add_argument("--decisions", required=True)
     coa_mapping_apply_parser.add_argument("--output", required=True)
     coa_mapping_apply_parser.set_defaults(func=_apply_coa_mapping_decisions_command)
+
+    journal_proposal_parser = subparsers.add_parser(
+        "propose-journals",
+        help="Create pending-review journal proposals from approved CoA mapping decisions.",
+    )
+    journal_proposal_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    journal_proposal_parser.add_argument("--applied-mappings", required=True)
+    journal_proposal_parser.add_argument("--output", default="outputs/journal_proposals.md")
+    journal_proposal_parser.add_argument("--date", default=None)
+    journal_proposal_parser.set_defaults(func=_propose_journals_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",
