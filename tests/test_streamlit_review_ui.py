@@ -39,7 +39,7 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "Build review packet" in source
     assert "Build release candidate" in source
     assert "Final export" in source
-    assert "Engagement setup" in source
+    assert "Workspace details" in source
     assert "Status dashboard" in source
     assert "Reviewed Trial Balance" in source
     assert "Draft Statements" in source
@@ -69,6 +69,23 @@ def test_upload_step_does_not_show_stale_workspace_dashboard_before_upload():
     assert DEFAULT_ARTIFACT_DIR == Path("outputs/streamlit_review_workspace")
     assert DEFAULT_STATE == Path("outputs/streamlit_review_workspace/engagement_state.json")
     assert DEFAULT_INPUT_DIR == Path("outputs/streamlit_review_workspace/uploads")
+
+
+def test_streamlit_workflow_initializes_clean_engagement_state(tmp_path: Path):
+    from accountant_copilot.review_app import _ensure_engagement_state_for_step, _workflow_steps
+
+    upload_dir = tmp_path / "uploads"
+    state_path = tmp_path / "engagement_state.json"
+    steps = _workflow_steps(str(upload_dir), str(tmp_path), str(state_path))
+
+    created = _ensure_engagement_state_for_step(steps[0])
+
+    assert created == state_path
+    assert upload_dir.is_dir()
+    state = json.loads(state_path.read_text())
+    assert state["engagement_id"] == "streamlit_local"
+    assert state["entity_name"] == "Uploaded engagement"
+    assert state["source_documents"] == []
 
 
 def test_document_inventory_rows_are_reviewable_inline(tmp_path: Path):

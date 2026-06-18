@@ -123,6 +123,59 @@ def _run_cli(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, "-m", "accountant_copilot.cli", *args], cwd=cwd, env=env, text=True, capture_output=True, check=False)
 
 
+def _step_path_after_option(step: dict[str, Any], option: str) -> Path | None:
+    commands = step.get("command")
+    if not commands:
+        return None
+    command_list = commands if isinstance(commands[0], list) else [commands]
+    for command in command_list:
+        for idx, value in enumerate(command):
+            if value == option and idx + 1 < len(command):
+                return Path(command[idx + 1])
+    return None
+
+
+def _step_state_path(step: dict[str, Any]) -> Path | None:
+    return _step_path_after_option(step, "--state")
+
+
+def _step_input_dir(step: dict[str, Any]) -> Path | None:
+    return _step_path_after_option(step, "--input-dir")
+
+
+def _ensure_engagement_state_for_step(step: dict[str, Any]) -> Path | None:
+    input_dir = _step_input_dir(step)
+    if input_dir is not None:
+        input_dir.mkdir(parents=True, exist_ok=True)
+    state_path = _step_state_path(step)
+    if state_path is None or state_path.exists():
+        return state_path
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    initial_state = {
+        "engagement_id": "streamlit_local",
+        "entity_name": "Uploaded engagement",
+        "entity_type": None,
+        "fy_start": "",
+        "fy_end": "",
+        "exceptions": [],
+        "decisions": [],
+        "preferences": [],
+        "evidence": [],
+        "source_documents": [],
+        "chart_accounts": [],
+        "adjustment_proposals": [],
+        "output_artifacts": [],
+        "state_transitions": [],
+        "agent_tasks": [],
+        "coa_review_required": False,
+        "coa_review_status": "not_required",
+        "adjustment_review_status": "not_started",
+        "lifecycle_status": "intake",
+    }
+    state_path.write_text(json.dumps(initial_state, indent=2, sort_keys=True))
+    return state_path
+
+
 def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[dict[str, Any]]:
     return [
         {
@@ -472,6 +525,7 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifa
             st.caption("Click the button to run this step. The output and review controls will appear here after it runs.")
             button_key = _workflow_step_button_key(title, idx, step)
             if st.button(step["label"], key=button_key):
+                _ensure_engagement_state_for_step(step)
                 results = _run_step_command(step["command"], cwd)
                 refreshed_outputs = [Path(path) for path in step.get("outputs", [])]
                 refreshed_count = sum(path.exists() for path in refreshed_outputs)
@@ -499,7 +553,7 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifa
 
 
 def _render_engagement_setup(artifact_dir: Path, state_path: Path, input_dir: Path) -> None:
-    st.header("Engagement setup")
+    st.header("Workspace details")
     state = _load_json(state_path, {})
     col1, col2 = st.columns(2)
     with col1:
@@ -682,14 +736,14 @@ def main() -> None:
     input_dir = Path(_query_param("input_dir", app_args.input_dir))
 
     with st.sidebar:
-        st.header("Engagement")
+        st.header("Workspace")
         st.caption("Use the main tabs for normal workflow. Technical paths are advanced settings.")
         with st.expander("Advanced technical paths", expanded=False):
             state_path = Path(st.text_input("State path", str(state_path)))
             artifact_dir = Path(st.text_input("Artifact directory", str(artifact_dir)))
             input_dir = Path(st.text_input("Upload/input directory", str(input_dir)))
             st.caption("Use `ingest-raw-inputs` after staging new uploads.")
-        with st.expander("Engagement details", expanded=False):
+        with st.expander("Workspace details", expanded=False):
             _render_engagement_setup(artifact_dir, state_path, input_dir)
 
     workflow_steps = _workflow_steps(str(input_dir), str(artifact_dir), str(state_path))
