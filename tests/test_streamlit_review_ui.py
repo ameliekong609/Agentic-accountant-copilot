@@ -124,13 +124,13 @@ def test_document_inventory_rows_are_reviewable_inline(tmp_path: Path):
 def test_accounting_fact_rows_show_document_level_output_with_multiple_facts(tmp_path: Path):
     from accountant_copilot.review_app import _accounting_fact_rows
 
-    (tmp_path / "engagement_state.json").write_text(json.dumps({"source_documents": [
-        {"document_id": "raw_001", "file_path": "inputs/bank.pdf", "document_type": "bank_statement"},
-        {"document_id": "raw_002", "file_path": "inputs/an3.pdf", "document_type": "investment_statement"},
-        {"document_id": "raw_003", "file_path": "inputs/supporting.pdf", "document_type": "supporting_document"},
-    ]}))
-    (tmp_path / "bank_statement_facts.json").write_text(json.dumps({"facts": [{"document_id": "raw_001", "account_number": "123", "closing_balance": "100.00", "statement_period": "Jan 2025", "evidence_id": "raw_001_page_001"}], "findings": [{"document_id": "raw_001", "category": "page_noise"}]}))
-    (tmp_path / "distribution_tax_facts.json").write_text(json.dumps({"facts": [{"document_id": "raw_002", "investment_name": "ANZ Capital Notes 9", "security_code": "AN3PL", "payment_date": "20 June 2024", "amount": "6,450.30", "evidence_id": "raw_002_page_001"}], "findings": []}))
+    (tmp_path / "accounting_facts_by_document.json").write_text(json.dumps({
+        "documents": [
+            {"document_id": "raw_001", "file_path": "inputs/bank.pdf", "file_name": "bank.pdf", "document_type": "bank_statement", "status": "extracted", "accounting_facts": [{"fact_type": "bank_statement", "page": "1", "evidence_id": "raw_001_page_001", "fields": {"account_number": "123", "closing_balance": "100.00", "statement_period": "Jan 2025"}}]},
+            {"document_id": "raw_002", "file_path": "inputs/an3.pdf", "file_name": "an3.pdf", "document_type": "investment_statement", "status": "extracted", "accounting_facts": [{"fact_type": "distribution_tax", "page": "1", "evidence_id": "raw_002_page_001", "fields": {"investment_name": "ANZ Capital Notes 9", "security_code": "AN3PL", "payment_date": "20 June 2024", "amount": "6,450.30"}}]},
+            {"document_id": "raw_003", "file_path": "inputs/supporting.pdf", "file_name": "supporting.pdf", "document_type": "supporting_document", "status": "no_fact_extracted", "accounting_facts": []},
+        ]
+    }))
 
     rows = _accounting_fact_rows(tmp_path)
 
@@ -159,6 +159,36 @@ def test_accounting_fact_output_summary_reconciles_to_uploaded_documents(tmp_pat
         "accounting_fact_rows": 3,
         "documents_without_facts": 1,
     }
+
+
+def test_accounting_facts_output_renders_documents_as_expandable_sections():
+    import inspect
+    from accountant_copilot.review_app import _render_accounting_facts_output
+
+    source = inspect.getsource(_render_accounting_facts_output)
+
+    assert "st.expander" in source
+    assert "st.dataframe" not in source
+    assert "accounting_facts_by_document.json" in source
+
+
+def test_match_tab_renders_source_match_output_inline():
+    source = APP.read_text()
+    match_block = source.split("with match_tab:", 1)[1].split("with coa_tab:", 1)[0]
+
+    assert "_render_source_match_output(artifact_dir)" in match_block
+
+
+def test_source_match_output_renders_matches_and_findings_not_generic_copy():
+    import inspect
+    from accountant_copilot.review_app import _render_source_match_output
+
+    source = inspect.getsource(_render_source_match_output)
+
+    assert "source_fact_matches.json" in source
+    assert "Matched items" in source
+    assert "Unmatched or uncertain items" in source
+    assert "st.expander" in source
 
 
 def test_extract_tab_renders_accounting_facts_not_triage_first():
@@ -350,7 +380,8 @@ def test_workflow_steps_embed_outputs_and_review_actions():
     by_label = {step["label"]: step for step in steps}
 
     assert by_label["Process documents and build inventory"]["user_output"] == "Document inventory is ready for review."
-    assert by_label["Extract accounting facts"]["review_action"] == "Review extracted facts first, then any extraction review items before matching."
+    assert by_label["Extract accounting facts"]["review_action"] == "Review the document-grouped accounting facts before matching."
+    assert by_label["Extract accounting facts"]["outputs"] == ["outputs/raw_inputs_pdf_extraction/accounting_facts_by_document.json"]
     assert by_label["Build CoA and mappings"]["review_action"] == "Review and approve CoA/mapping suggestions now."
     assert by_label["Build reviewed TB and draft statements"]["review_action"] == "Review the trial balance and draft statements now."
     assert by_label["Build release candidate"]["review_action"] == "Review release package blockers now."

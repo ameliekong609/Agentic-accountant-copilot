@@ -192,21 +192,18 @@ def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[
         {
             "label": "Extract accounting facts",
             "description": "Extract bank, invoice, distribution/tax, and broker trade facts from source evidence.",
-            "user_output": "Accounting facts are ready; extraction review items are listed separately.",
-            "review_action": "Review extracted facts first, then any extraction review items before matching.",
+            "user_output": "Document-grouped accounting facts are ready.",
+            "review_action": "Review the document-grouped accounting facts before matching.",
             "command": [
-                ["export-bank-statement-facts", "--state", state_path, "--output", f"{artifact_dir}/bank_statement_facts.md"],
-                ["export-bank-transactions", "--state", state_path, "--output", f"{artifact_dir}/bank_transactions.md"],
-                ["export-invoice-facts", "--state", state_path, "--output", f"{artifact_dir}/invoice_facts.md"],
-                ["export-distribution-tax-facts", "--state", state_path, "--output", f"{artifact_dir}/distribution_tax_facts.md"],
-                ["export-broker-trade-facts", "--state", state_path, "--output", f"{artifact_dir}/broker_trade_facts.md"],
+                ["export-bank-statement-facts", "--state", state_path, "--output", f"{artifact_dir}/.internal_facts/bank_statement_facts.md"],
+                ["export-bank-transactions", "--state", state_path, "--output", f"{artifact_dir}/.internal_facts/bank_transactions.md"],
+                ["export-invoice-facts", "--state", state_path, "--output", f"{artifact_dir}/.internal_facts/invoice_facts.md"],
+                ["export-distribution-tax-facts", "--state", state_path, "--output", f"{artifact_dir}/.internal_facts/distribution_tax_facts.md"],
+                ["export-broker-trade-facts", "--state", state_path, "--output", f"{artifact_dir}/.internal_facts/broker_trade_facts.md"],
+                ["export-accounting-facts-by-document", "--state", state_path, "--artifact-dir", f"{artifact_dir}/.internal_facts", "--output", f"{artifact_dir}/accounting_facts_by_document.json", "--remove-legacy-split-facts"],
             ],
             "outputs": [
-                f"{artifact_dir}/bank_statement_facts.json",
-                f"{artifact_dir}/bank_transactions.json",
-                f"{artifact_dir}/invoice_facts.json",
-                f"{artifact_dir}/distribution_tax_facts.json",
-                f"{artifact_dir}/broker_trade_facts.json",
+                f"{artifact_dir}/accounting_facts_by_document.json",
             ],
         },
         {
@@ -217,13 +214,13 @@ def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[
             "command": [
                 "match-source-facts",
                 "--bank-transactions",
-                f"{artifact_dir}/bank_transactions.json",
+                f"{artifact_dir}/.internal_facts/bank_transactions.json",
                 "--invoice-facts",
-                f"{artifact_dir}/invoice_facts.json",
+                f"{artifact_dir}/.internal_facts/invoice_facts.json",
                 "--distribution-tax-facts",
-                f"{artifact_dir}/distribution_tax_facts.json",
+                f"{artifact_dir}/.internal_facts/distribution_tax_facts.json",
                 "--broker-trade-facts",
-                f"{artifact_dir}/broker_trade_facts.json",
+                f"{artifact_dir}/.internal_facts/broker_trade_facts.json",
                 "--output",
                 f"{artifact_dir}/source_fact_matches.md",
             ],
@@ -241,11 +238,11 @@ def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[
                     "--state",
                     state_path,
                     "--invoice-facts",
-                    f"{artifact_dir}/invoice_facts.json",
+                    f"{artifact_dir}/.internal_facts/invoice_facts.json",
                     "--distribution-tax-facts",
-                    f"{artifact_dir}/distribution_tax_facts.json",
+                    f"{artifact_dir}/.internal_facts/distribution_tax_facts.json",
                     "--broker-trade-facts",
-                    f"{artifact_dir}/broker_trade_facts.json",
+                    f"{artifact_dir}/.internal_facts/broker_trade_facts.json",
                     "--output",
                     f"{artifact_dir}/coa_mapping_suggestions.md",
                 ],
@@ -499,50 +496,31 @@ def _accounting_fact_summary(fact_type: str, fact: dict[str, Any]) -> str:
 
 
 def _accounting_fact_rows(artifact_dir: Path) -> list[dict[str, str]]:
-    state = _load_json(artifact_dir / "engagement_state.json", {})
-    documents = {
-        doc.get("document_id", ""): doc
-        for doc in state.get("source_documents", [])
-        if doc.get("document_id")
-    }
-    specs = [
-        ("bank_statement", "bank_statement_facts.json", "facts"),
-        ("bank_transaction", "bank_transactions.json", "transactions"),
-        ("invoice", "invoice_facts.json", "facts"),
-        ("distribution_tax", "distribution_tax_facts.json", "facts"),
-        ("broker_trade", "broker_trade_facts.json", "facts"),
-    ]
+    payload = _load_json(artifact_dir / "accounting_facts_by_document.json", {})
     rows: list[dict[str, str]] = []
-    documents_with_facts: set[str] = set()
-    for fact_type, filename, key in specs:
-        data = _load_json(artifact_dir / filename, {})
-        facts = data.get(key, []) if isinstance(data, dict) else []
-        for fact in facts if isinstance(facts, list) else []:
-            document_id = str(fact.get("document_id", ""))
-            if document_id:
-                documents_with_facts.add(document_id)
-            doc = documents.get(document_id, {})
-            file_path = str(doc.get("file_path") or fact.get("file_path") or "")
+    for document in payload.get("documents", []) if isinstance(payload, dict) else []:
+        facts = document.get("accounting_facts", []) if isinstance(document, dict) else []
+        if facts:
+            for fact in facts:
+                fact_type = str(fact.get("fact_type", "accounting_fact"))
+                fields = fact.get("fields", {}) if isinstance(fact.get("fields"), dict) else {}
+                rows.append({
+                    "document": str(document.get("file_name") or Path(str(document.get("file_path", ""))).name or document.get("document_id", "")),
+                    "document_type": str(document.get("document_type") or "unknown"),
+                    "fact_type": fact_type,
+                    "accounting_facts": _accounting_fact_summary(fact_type, fields),
+                    "evidence": str(fact.get("evidence_id", "")),
+                    "status": "extracted",
+                })
+        else:
             rows.append({
-                "document": Path(file_path).name or file_path or document_id,
-                "document_type": str(doc.get("document_type") or fact.get("document_type") or "unknown"),
-                "fact_type": fact_type,
-                "accounting_facts": _accounting_fact_summary(fact_type, fact),
-                "evidence": str(fact.get("evidence_id", "")),
-                "status": "extracted",
+                "document": str(document.get("file_name") or Path(str(document.get("file_path", ""))).name or document.get("document_id", "")),
+                "document_type": str(document.get("document_type") or "unknown"),
+                "fact_type": "none",
+                "accounting_facts": "No accounting fact extracted yet",
+                "evidence": "",
+                "status": "no_fact_extracted",
             })
-    for document_id, doc in documents.items():
-        if document_id in documents_with_facts:
-            continue
-        file_path = str(doc.get("file_path") or "")
-        rows.append({
-            "document": Path(file_path).name or file_path or document_id,
-            "document_type": str(doc.get("document_type") or "unknown"),
-            "fact_type": "none",
-            "accounting_facts": "No accounting fact extracted yet",
-            "evidence": "",
-            "status": "no_fact_extracted",
-        })
     return rows
 
 
@@ -559,19 +537,69 @@ def _accounting_fact_output_summary(rows: list[dict[str, str]]) -> dict[str, int
 
 
 def _render_accounting_facts_output(artifact_dir: Path) -> None:
-    rows = _accounting_fact_rows(artifact_dir)
-    if not rows:
+    payload = _load_json(artifact_dir / "accounting_facts_by_document.json", {})
+    documents = payload.get("documents", []) if isinstance(payload, dict) else []
+    if not documents:
         st.info("Accounting facts will appear here after extraction runs.")
         return
+    rows = _accounting_fact_rows(artifact_dir)
     summary = _accounting_fact_output_summary(rows)
     cols = st.columns(4)
     cols[0].metric("Uploaded documents", summary["uploaded_documents"])
     cols[1].metric("Documents with facts", summary["documents_with_facts"])
     cols[2].metric("Accounting fact rows", summary["accounting_fact_rows"])
     cols[3].metric("Documents without facts", summary["documents_without_facts"])
-    st.markdown("**Accounting facts**")
-    st.write("Each row is an extracted accounting fact linked back to its source document and evidence. Some documents can produce multiple facts.")
-    st.dataframe(rows, use_container_width=True)
+    st.markdown("**Accounting facts by document**")
+    st.write("Open a document to review the accounting facts extracted from its pages. A document can have multiple facts.")
+    for document in documents:
+        facts = document.get("accounting_facts", []) if isinstance(document, dict) else []
+        status = document.get("status", "unknown")
+        label = f"{document.get('file_name') or document.get('document_id')} — {len(facts)} fact(s) — {status}"
+        with st.expander(label, expanded=bool(facts)):
+            st.caption(f"Document type: {document.get('document_type', 'unknown')}")
+            if not facts:
+                st.info("No accounting fact extracted yet.")
+                continue
+            for fact_index, fact in enumerate(facts, start=1):
+                fields = fact.get("fields", {}) if isinstance(fact.get("fields"), dict) else {}
+                st.markdown(f"**Fact {fact_index}: {fact.get('fact_type', 'accounting_fact')}**")
+                st.write(_accounting_fact_summary(str(fact.get("fact_type", "accounting_fact")), fields))
+                st.caption(f"Page: {fact.get('page', '')} · Evidence: {fact.get('evidence_id', '')}")
+                if fields:
+                    st.json(fields)
+                snippet = fact.get("snippet")
+                if snippet:
+                    st.caption(str(snippet))
+
+
+def _render_source_match_output(artifact_dir: Path) -> None:
+    payload = _load_json(artifact_dir / "source_fact_matches.json", {})
+    if not payload:
+        st.info("Matching results will appear here after this step runs.")
+        return
+    summary = payload.get("summary", {}) if isinstance(payload, dict) else {}
+    cols = st.columns(3)
+    cols[0].metric("Source facts considered", summary.get("source_facts", 0))
+    cols[1].metric("Matched items", summary.get("matches", 0))
+    cols[2].metric("Unmatched or uncertain items", summary.get("findings", 0))
+    st.markdown("**Matched items**")
+    matches = payload.get("matches", []) if isinstance(payload, dict) else []
+    if matches:
+        for index, match in enumerate(matches, start=1):
+            with st.expander(f"Match {index}: {match.get('source_fact_type', 'source fact')}", expanded=index <= 3):
+                st.json(match)
+    else:
+        st.info("No source facts matched to bank transactions yet.")
+    st.markdown("**Unmatched or uncertain items**")
+    findings = payload.get("findings", []) if isinstance(payload, dict) else []
+    if findings:
+        for index, finding in enumerate(findings, start=1):
+            label = f"{finding.get('source_fact_type', 'source fact')} — {finding.get('amount', 'amount not extracted')} — {finding.get('date', 'date not extracted')}"
+            with st.expander(label, expanded=index <= 5):
+                st.write(finding.get("recommended_action", "Review this item before continuing."))
+                st.json(finding)
+    else:
+        st.success("No unmatched or uncertain source matches found.")
 
 
 def _render_document_inventory_review(artifact_dir: Path) -> None:
@@ -802,6 +830,7 @@ def main() -> None:
 
     with match_tab:
         _render_workflow_orchestrator(stage_groups[2]["steps"], repo_root, artifact_dir, stage_groups[2]["title"])
+        _render_source_match_output(artifact_dir)
 
     with coa_tab:
         _render_workflow_orchestrator(stage_groups[3]["steps"], repo_root, artifact_dir, stage_groups[3]["title"])

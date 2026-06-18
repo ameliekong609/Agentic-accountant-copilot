@@ -1522,6 +1522,114 @@ def _export_distribution_tax_facts_command(args: argparse.Namespace) -> int:
     return 0 if not payload["findings"] else 1
 
 
+def _build_accounting_facts_by_document_payload(state_path: Path, artifact_dir: Path) -> dict:
+    state = json.loads(state_path.read_text())
+    documents = []
+    by_document: dict[str, dict] = {}
+    for source in state.get("source_documents", []):
+        document_id = str(source.get("document_id", ""))
+        if not document_id:
+            continue
+        document = {
+            "document_id": document_id,
+            "file_path": source.get("file_path", ""),
+            "file_name": Path(str(source.get("file_path", ""))).name,
+            "document_type": source.get("document_type", "unknown"),
+            "status": "no_fact_extracted",
+            "accounting_facts": [],
+        }
+        by_document[document_id] = document
+        documents.append(document)
+    specs = [
+        ("bank_statement", "bank_statement_facts.json", "facts"),
+        ("bank_transaction", "bank_transactions.json", "transactions"),
+        ("invoice", "invoice_facts.json", "facts"),
+        ("distribution_tax", "distribution_tax_facts.json", "facts"),
+        ("broker_trade", "broker_trade_facts.json", "facts"),
+    ]
+    metadata_keys = {"document_id", "file_path", "page", "evidence_id", "document_type", "snippet", "confidence"}
+    accounting_fact_rows = 0
+    for fact_type, filename, record_key in specs:
+        payload_path = artifact_dir / filename
+        if not payload_path.exists():
+            continue
+        payload = json.loads(payload_path.read_text())
+        records = payload.get(record_key, []) if isinstance(payload, dict) else []
+        for record in records if isinstance(records, list) else []:
+            document_id = str(record.get("document_id", ""))
+            if not document_id:
+                continue
+            document = by_document.get(document_id)
+            if document is None:
+                file_path = str(record.get("file_path", ""))
+                document = {
+                    "document_id": document_id,
+                    "file_path": file_path,
+                    "file_name": Path(file_path).name,
+                    "document_type": record.get("document_type", "unknown"),
+                    "status": "no_fact_extracted",
+                    "accounting_facts": [],
+                }
+                by_document[document_id] = document
+                documents.append(document)
+            fields = {key: value for key, value in record.items() if key not in metadata_keys}
+            document["accounting_facts"].append({
+                "fact_type": fact_type,
+                "page": record.get("page", ""),
+                "evidence_id": record.get("evidence_id", ""),
+                "confidence": record.get("confidence"),
+                "snippet": record.get("snippet", ""),
+                "fields": fields,
+            })
+            document["status"] = "extracted"
+            accounting_fact_rows += 1
+    documents_with_facts = sum(1 for document in documents if document["accounting_facts"])
+    return {
+        "engagement_id": state.get("engagement_id", ""),
+        "entity_name": state.get("entity_name", ""),
+        "fact_type": "accounting_facts_by_document",
+        "documents": documents,
+        "summary": {
+            "uploaded_documents": len(documents),
+            "documents_with_facts": documents_with_facts,
+            "accounting_fact_rows": accounting_fact_rows,
+            "documents_without_facts": len(documents) - documents_with_facts,
+        },
+    }
+
+
+SPLIT_FACT_ARTIFACT_NAMES = [
+    "bank_statement_facts.json",
+    "bank_statement_facts.md",
+    "bank_transactions.json",
+    "bank_transactions.md",
+    "invoice_facts.json",
+    "invoice_facts.md",
+    "distribution_tax_facts.json",
+    "distribution_tax_facts.md",
+    "broker_trade_facts.json",
+    "broker_trade_facts.md",
+]
+
+
+def _remove_legacy_split_fact_files(output_dir: Path) -> None:
+    for name in SPLIT_FACT_ARTIFACT_NAMES:
+        path = output_dir / name
+        if path.exists():
+            path.unlink()
+
+
+def _export_accounting_facts_by_document_command(args: argparse.Namespace) -> int:
+    output = Path(args.output)
+    payload = _build_accounting_facts_by_document_payload(Path(args.state), Path(args.artifact_dir))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    if getattr(args, "remove_legacy_split_facts", False):
+        _remove_legacy_split_fact_files(output.parent)
+    print(f"Exported accounting facts by document → {output}")
+    return 0
+
+
 def _distribution_review_actions(fact: dict) -> list[dict]:
     actions: list[dict] = []
     components = fact.get("components", {}) or {}
@@ -5174,6 +5282,16 @@ def build_parser() -> argparse.ArgumentParser:
     broker_trade_review_parser.add_argument("--facts", default="outputs/broker_trade_facts.json")
     broker_trade_review_parser.add_argument("--output", default="outputs/broker_trade_review.md")
     broker_trade_review_parser.set_defaults(func=_export_broker_trade_review_command)
+
+    accounting_facts_by_document_parser = subparsers.add_parser(
+        "export-accounting-facts-by-document",
+        help="Build the primary document-grouped accounting facts artifact from internal extracted fact files.",
+    )
+    accounting_facts_by_document_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    accounting_facts_by_document_parser.add_argument("--artifact-dir", default="outputs")
+    accounting_facts_by_document_parser.add_argument("--output", default="outputs/accounting_facts_by_document.json")
+    accounting_facts_by_document_parser.add_argument("--remove-legacy-split-facts", action="store_true")
+    accounting_facts_by_document_parser.set_defaults(func=_export_accounting_facts_by_document_command)
 
     source_fact_match_parser = subparsers.add_parser(
         "match-source-facts",
