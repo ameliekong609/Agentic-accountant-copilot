@@ -1847,6 +1847,99 @@ def _match_source_facts_command(args: argparse.Namespace) -> int:
     return 0 if not payload["findings"] else 1
 
 
+def _account_keyword_score(account: ChartAccount, keywords: list[str]) -> int:
+    haystack = f"{account.name} {account.type} {account.presentation_group}".lower()
+    return sum(1 for keyword in keywords if keyword in haystack)
+
+
+def _suggest_account_for_source_fact(fact: dict, accounts: list[ChartAccount]) -> ChartAccount | None:
+    source_type = fact.get("source_fact_type")
+    if source_type == "invoice":
+        keywords = ["fee", "expense", "management", "accounting"]
+    elif source_type == "distribution_tax":
+        keywords = ["distribution", "income", "revenue", "dividend", "interest"]
+    elif source_type == "broker_trade":
+        keywords = ["investment", "portfolio", "asset", "security"]
+    else:
+        keywords = []
+    scored = sorted(((_account_keyword_score(account, keywords), account) for account in accounts), key=lambda item: (-item[0], item[1].code))
+    return scored[0][1] if scored and scored[0][0] > 0 else None
+
+
+def _build_coa_mapping_payload(state: EngagementState, invoice_payload: dict | None, distribution_payload: dict | None, broker_payload: dict | None) -> dict:
+    source_facts = _source_fact_match_candidates(invoice_payload, distribution_payload, broker_payload)
+    suggestions: list[dict] = []
+    findings: list[dict] = []
+    for fact in source_facts:
+        account = _suggest_account_for_source_fact(fact, state.chart_accounts)
+        if account is None:
+            findings.append({
+                "category": "coa_mapping_account_missing",
+                "source_fact_type": fact.get("source_fact_type"),
+                "source_evidence_id": fact.get("evidence_id"),
+                "recommended_action": "Accountant to add or select an appropriate CoA account before mapping this source fact.",
+            })
+            continue
+        suggestion = {
+            "source_fact_type": fact.get("source_fact_type"),
+            "source_evidence_id": fact.get("evidence_id"),
+            "candidate_account_id": account.account_id,
+            "candidate_account_code": account.code,
+            "candidate_account_name": account.name,
+            "amount": f"{fact['amount']:.2f}",
+            "candidate_treatment": "coa_mapping_suggestion",
+            "approved": False,
+            "evidence_refs": [fact.get("evidence_id"), account.account_id],
+        }
+        suggestions.append(suggestion)
+        findings.append({
+            "category": "coa_mapping_review_required",
+            **suggestion,
+            "recommended_action": "Accountant to approve, change, or reject this CoA mapping before journal/TB reliance.",
+        })
+    return {
+        "engagement_id": state.engagement_id,
+        "entity_name": state.entity_name,
+        "mapping_type": "source_fact_to_coa",
+        "suggestions": suggestions,
+        "findings": findings,
+        "summary": {"source_facts": len(source_facts), "suggestions": len(suggestions), "findings": len(findings), "approved": 0},
+    }
+
+
+def _format_coa_mapping_suggestions(payload: dict) -> str:
+    lines = [f"# CoA Mapping Suggestions — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend([f"- Source facts: {summary['source_facts']}", f"- Suggestions: {summary['suggestions']}", f"- Findings: {summary['findings']}", f"- Approved automatically: {summary['approved']}", ""])
+    if payload["suggestions"]:
+        lines.append("## Suggested mappings")
+        for item in payload["suggestions"]:
+            lines.extend([f"- {item['source_fact_type']} {item['amount']} → {item['candidate_account_code']} {item['candidate_account_name']}", f"  - Approved: {item['approved']}", f"  - Evidence: {', '.join(ref for ref in item.get('evidence_refs', []) if ref)}"])
+    if payload["findings"]:
+        lines.extend(["", "## Findings needing review"])
+        for item in payload["findings"]:
+            lines.extend([f"- {item['category']}: {item.get('source_fact_type')}", f"  - Action: {item['recommended_action']}"])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _suggest_coa_mappings_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    payload = _build_coa_mapping_payload(
+        state,
+        _load_optional_json(getattr(args, "invoice_facts", None)),
+        _load_optional_json(getattr(args, "distribution_tax_facts", None)),
+        _load_optional_json(getattr(args, "broker_trade_facts", None)),
+    )
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_coa_mapping_suggestions(payload))
+    json_output = output.with_suffix(".json")
+    json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported CoA mapping suggestions → {output}")
+    print(f"Exported CoA mapping suggestions JSON → {json_output}")
+    return 0 if not payload["findings"] else 1
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -2346,6 +2439,7 @@ def _format_source_fact_layers(state_path: Path) -> str:
         ("Broker trade facts", "broker_trade_facts.md"),
         ("Broker trade review", "broker_trade_review.md"),
         ("Source fact bank matches", "source_fact_matches.md"),
+        ("CoA mapping suggestions", "coa_mapping_suggestions.md"),
     ]
     lines = ["# Source Fact and Review Layers", ""]
     found = False
@@ -3667,6 +3761,17 @@ def build_parser() -> argparse.ArgumentParser:
     source_fact_match_parser.add_argument("--broker-trade-facts", default=None)
     source_fact_match_parser.add_argument("--output", default="outputs/source_fact_matches.md")
     source_fact_match_parser.set_defaults(func=_match_source_facts_command)
+
+    coa_mapping_parser = subparsers.add_parser(
+        "suggest-coa-mappings",
+        help="Suggest unapproved CoA mappings for extracted source facts and emit accountant review findings.",
+    )
+    coa_mapping_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    coa_mapping_parser.add_argument("--invoice-facts", default=None)
+    coa_mapping_parser.add_argument("--distribution-tax-facts", default=None)
+    coa_mapping_parser.add_argument("--broker-trade-facts", default=None)
+    coa_mapping_parser.add_argument("--output", default="outputs/coa_mapping_suggestions.md")
+    coa_mapping_parser.set_defaults(func=_suggest_coa_mappings_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",

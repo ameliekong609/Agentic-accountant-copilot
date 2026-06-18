@@ -215,3 +215,5 @@ CSV source intake now validates required `date`, `description`, and `amount` col
 `match-source-facts` matches extracted invoice, distribution/tax, and broker source facts to bank transaction evidence by exact amount/date. Proposed matches remain `approved=false`; ambiguous or missing matches become findings rather than forced links.
 
 `export-review-packet` includes `source_fact_layers.md` when source fact/review/matching markdown artifacts sit next to the engagement state, giving the accountant one packet section for bank transactions, invoice facts/review, distribution/tax facts/review, broker facts/review, and source-to-bank matching controls.
+
+`suggest-coa-mappings` creates unapproved CoA mapping suggestions from extracted source facts using the imported/chart accounts in engagement state. Missing candidate accounts and all proposed mappings become accountant review findings; mappings are not relied on until approved.

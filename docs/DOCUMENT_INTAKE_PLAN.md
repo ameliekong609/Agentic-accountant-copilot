@@ -64,7 +64,12 @@
    - leaves proposed matches unapproved for accountant review
    - reports ambiguous or missing bank matches as findings instead of forcing a link
 
-12. `export-bank-continuity`
+12. `suggest-coa-mappings`
+   - suggests source-fact to CoA mappings using imported/chart accounts in engagement state
+   - leaves all mapping suggestions unapproved for accountant review
+   - reports missing candidate accounts or mapping review needs as findings instead of relying on guessed mappings
+
+13. `export-bank-continuity`
    - compares sequential bank statement closing balances to next opening balances
    - groups statements by inferred account key before comparing
    - accepts same-day or next-day period bridges, because different banks label statement boundaries differently
