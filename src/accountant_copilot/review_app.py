@@ -192,8 +192,8 @@ def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[
         {
             "label": "Extract accounting facts",
             "description": "Extract bank, invoice, distribution/tax, and broker trade facts from source evidence.",
-            "user_output": "Accounting facts and extraction issues are ready.",
-            "review_action": "Extracted facts are ready. Review the items below before matching.",
+            "user_output": "Accounting facts are ready; extraction review items are listed separately.",
+            "review_action": "Review extracted facts first, then any extraction review items before matching.",
             "command": [
                 ["export-bank-statement-facts", "--state", state_path, "--output", f"{artifact_dir}/bank_statement_facts.md"],
                 ["export-bank-transactions", "--state", state_path, "--output", f"{artifact_dir}/bank_transactions.md"],
@@ -536,7 +536,7 @@ def _render_extraction_fact_summary(artifact_dir: Path) -> None:
         st.info("Extracted facts will appear here after this step runs.")
         return
     st.markdown("**Extracted facts**")
-    st.write("Review these extracted record counts before matching. Any review items are listed below.")
+    st.write("Review these extracted record counts before matching. Extraction review items are listed separately.")
     st.dataframe(rows, use_container_width=True)
 
 

@@ -388,7 +388,7 @@ def test_workflow_steps_embed_outputs_and_review_actions():
     by_label = {step["label"]: step for step in steps}
 
     assert by_label["Process documents and build inventory"]["user_output"] == "Document inventory is ready for review."
-    assert by_label["Extract accounting facts"]["review_action"] == "Extracted facts are ready. Review the items below before matching."
+    assert by_label["Extract accounting facts"]["review_action"] == "Review extracted facts first, then any extraction review items before matching."
     assert by_label["Build CoA and mappings"]["review_action"] == "Review and approve CoA/mapping suggestions now."
     assert by_label["Build reviewed TB and draft statements"]["review_action"] == "Review the trial balance and draft statements now."
     assert by_label["Build release candidate"]["review_action"] == "Review release package blockers now."

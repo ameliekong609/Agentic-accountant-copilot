@@ -13,6 +13,7 @@ import sys
 import zipfile
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
 
@@ -1297,8 +1298,101 @@ def _extract_label_amount(quote: str, labels: list[str]) -> str | None:
     return None
 
 
-def _extract_distribution_tax_fact(document: SourceDocument, evidence: EvidenceRef) -> dict | None:
+def _clean_distribution_money(amount: str | None) -> str | None:
+    cleaned = _clean_money_amount(amount)
+    if cleaned is None:
+        return None
+    return re.sub(r"^[A-Z]{1,3}\$", "", cleaned).strip()
+
+
+@lru_cache(maxsize=64)
+def _extract_pdf_full_text(path_text: str) -> str:
+    path = Path(path_text)
+    if not path.exists() or path.suffix.lower() != ".pdf":
+        return ""
+    try:
+        import fitz  # type: ignore[import-not-found]
+
+        with fitz.open(path) as doc:
+            return " ".join(page.get_text("text") for page in doc)
+    except Exception:
+        try:
+            result = subprocess.run(
+                ["pdftotext", "-layout", str(path), "-"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            return ""
+        if result.returncode != 0:
+            return ""
+        return result.stdout
+
+
+def _distribution_quote_with_pdf_text(document: SourceDocument, evidence: EvidenceRef) -> str:
     quote = " ".join((evidence.quote or "").split())
+    if not re.search(r"\bAN3\b|ANZ Capital Notes 9|AN3_Payment_Advice", f"{quote} {document.file_path}", re.IGNORECASE):
+        return quote
+    pdf_text = _extract_pdf_full_text(document.file_path)
+    if not pdf_text:
+        return quote
+    pdf_quote = " ".join(pdf_text.split())
+    if len(pdf_quote) <= len(quote):
+        return quote
+    return pdf_quote
+
+
+def _extract_an3_payment_advice_fields(quote: str) -> dict:
+    if not re.search(r"\bAN3\b|ANZ Capital Notes 9", quote, re.IGNORECASE):
+        return {}
+    fields: dict[str, object] = {}
+    header_match = re.search(
+        r"Security Code\s+Record Date\s+Payment Date\s+TFN\s*/?\s*ABN\s+"
+        r"(?P<security>[A-Z0-9]+)\s+"
+        r"(?P<record_date>\d{1,2}\s+[A-Za-z]+\s+\d{4})\s+"
+        r"(?P<payment_date>\d{1,2}\s+[A-Za-z]+\s+\d{4})",
+        quote,
+        re.IGNORECASE,
+    )
+    if header_match:
+        fields["security_code"] = header_match.group("security")
+        fields["record_date"] = header_match.group("record_date")
+        fields["payment_date"] = header_match.group("payment_date")
+    investment_match = re.search(
+        r"details of your\s+\w+\s+(?P<name>ANZ Capital Notes 9)\s+distribution",
+        quote,
+        re.IGNORECASE,
+    )
+    if investment_match:
+        fields["investment_name"] = investment_match.group("name")
+    table_match = re.search(
+        r"NUMBER OF\s+NOTES\s+FRANKED\s+AMOUNT\s+UNFRANKED\s+AMOUNT\s+LESS\s+TAX\*?\s+NET\s+AMOUNT\s+FRANKING\s+CREDIT\s+"
+        r"(?P<notes>\d[\d,]*)\s+"
+        r"(?P<franked>A?\$\d[\d,]*\.\d{2})\s+"
+        r"(?P<unfranked>A?\$\d[\d,]*\.\d{2})\s+"
+        r"(?P<tax>A?\$\d[\d,]*\.\d{2})\s+"
+        r"(?P<net>A?\$\d[\d,]*\.\d{2})\s+"
+        r"(?P<franking>A?\$\d[\d,]*\.\d{2})",
+        quote,
+        re.IGNORECASE,
+    )
+    if table_match:
+        fields["number_of_notes"] = table_match.group("notes")
+        components = {
+            "franked_amount": _clean_distribution_money(table_match.group("franked")),
+            "unfranked_amount": _clean_distribution_money(table_match.group("unfranked")),
+            "tfn_withholding": _clean_distribution_money(table_match.group("tax")),
+            "net_cash_distribution": _clean_distribution_money(table_match.group("net")),
+            "franking_credit_tax_offset": _clean_distribution_money(table_match.group("franking")),
+        }
+        fields["components"] = {key: value for key, value in components.items() if value is not None}
+        fields["amount"] = components["net_cash_distribution"]
+    return fields
+
+
+def _extract_distribution_tax_fact(document: SourceDocument, evidence: EvidenceRef) -> dict | None:
+    quote = _distribution_quote_with_pdf_text(document, evidence)
     if not _is_distribution_tax_evidence(evidence, document):
         return None
     components = {
@@ -1306,6 +1400,8 @@ def _extract_distribution_tax_fact(document: SourceDocument, evidence: EvidenceR
         for component, labels in _DISTRIBUTION_COMPONENT_LABELS.items()
         if (amount := _extract_label_amount(quote, labels)) is not None
     }
+    an3_fields = _extract_an3_payment_advice_fields(quote)
+    components.update(an3_fields.get("components", {}))
     payment_date = None
     record_date = None
     payment_match = re.search(r"Payment\s+date:?\s*(?P<date>\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}|\d{1,2}/\d{1,2}/\d{2,4})", quote, re.IGNORECASE)
@@ -1314,20 +1410,28 @@ def _extract_distribution_tax_fact(document: SourceDocument, evidence: EvidenceR
         payment_date = payment_match.group("date")
     if record_match:
         record_date = record_match.group("date")
+    payment_date = an3_fields.get("payment_date") or payment_date
+    record_date = an3_fields.get("record_date") or record_date
     if not components and not payment_date and not record_date:
         return None
-    return {
+    fact = {
         "document_id": document.document_id,
         "file_path": document.file_path,
         "page": evidence.page,
         "evidence_id": evidence.evidence_id,
         "document_type": document.document_type,
+        "investment_name": an3_fields.get("investment_name"),
+        "security_code": an3_fields.get("security_code"),
+        "amount": an3_fields.get("amount") or components.get("net_cash_distribution") or components.get("cash_distribution"),
         "payment_date": payment_date,
         "record_date": record_date,
         "components": components,
         "confidence": evidence.confidence,
         "snippet": quote[:300],
     }
+    if an3_fields.get("number_of_notes"):
+        fact["number_of_notes"] = an3_fields["number_of_notes"]
+    return fact
 
 
 def _build_distribution_tax_facts_payload(state: EngagementState) -> dict:
@@ -1383,6 +1487,8 @@ def _format_distribution_tax_facts(payload: dict) -> str:
         for fact in payload["facts"]:
             lines.extend([
                 f"- `{fact['evidence_id']}` — `{fact['file_path']}` page {fact['page']}",
+                f"  - Investment/security: {fact.get('investment_name') or fact.get('security_code') or 'not extracted'}",
+                f"  - Amount: {fact.get('amount') or 'not extracted'}",
                 f"  - Payment date: {fact['payment_date'] or 'not extracted'}",
                 f"  - Record date: {fact['record_date'] or 'not extracted'}",
                 f"  - Confidence: {fact['confidence']}",
