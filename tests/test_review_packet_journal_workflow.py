@@ -30,8 +30,11 @@ def test_review_packet_journal_tb_section_links_decision_preview_and_export_arti
     state.adjustment_proposals.append(AdjustmentProposal(adjustment_id="journal_approved", description="Approved invoice", debit_account="acct_600", credit_account="acct_100", amount="110.00", date="2025-06-30", status="approved", decision_id="decision_1"))
     state_path = tmp_path / "engagement_state.json"
     state_path.write_text(state.model_dump_json())
-    for filename in ["journal_decisions_template.json", "applied_journal_decisions.json", "tb_impact_preview.md"]:
+    for filename in ["journal_decisions_template.json", "applied_journal_decisions.json", "tb_impact_preview.md", "post_journal_trial_balance.md", "statement_line_mapping.md"]:
         (tmp_path / filename).write_text("fixture")
+    draft_dir = tmp_path / "draft_statements"
+    draft_dir.mkdir()
+    (draft_dir / "draft_statements.md").write_text("fixture")
     reviewed_dir = tmp_path / "reviewed_journals"
     reviewed_dir.mkdir()
     (reviewed_dir / "reviewed_journals.md").write_text("fixture")
@@ -44,4 +47,7 @@ def test_review_packet_journal_tb_section_links_decision_preview_and_export_arti
     assert "Applied journal decisions" in impact
     assert "TB impact preview" in impact
     assert "Reviewed journals" in impact
+    assert "Post-journal trial balance" in impact
+    assert "Statement line mapping" in impact
+    assert "Draft statements" in impact
     assert "Approved journals: 1" in impact

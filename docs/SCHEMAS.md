@@ -231,3 +231,11 @@ Review packets now include `journal_tb_impact.md`, summarising CoA status, linke
 `preview-tb-impact` groups approved journal proposals by account and reports debit/credit impact, excluded unapproved journals, placeholder offsets, missing accounts, and balance status.
 
 `export-reviewed-journals` exports only approved journals to JSON, CSV, and markdown, and fails if any approved journal still contains `pending_review_offset`.
+
+`build-post-journal-tb` builds the reviewed post-journal trial balance from approved reviewed journals and CoA opening balances. It excludes unreviewed journals, blocks placeholder offsets/missing accounts, and reports balanced debit/credit movement status.
+
+`preview-statement-line-mapping` maps non-zero post-journal TB accounts to balance sheet or profit-and-loss lines using account type and presentation group, with unmapped accounts reported as findings.
+
+`render-draft-statements-from-tb` renders internal-review-only draft statements from the post-journal TB and statement-line mapping. It carries control references and refuses clean output when TB or mapping findings remain.
+
+`inspect-statement-chain-readiness` checks the reviewed-journal-to-draft-statement artifact chain and reports missing artifacts plus release blockers such as unapproved CoA, unresolved journals, or missing final sign-off.

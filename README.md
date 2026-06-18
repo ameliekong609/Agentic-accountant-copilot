@@ -463,6 +463,24 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-reviewed-journals \
   --state outputs/engagement_state.json \
   --output-dir outputs/reviewed_journals
 
+PYTHONPATH=src python3.11 -m accountant_copilot.cli build-post-journal-tb \
+  --state outputs/engagement_state.json \
+  --reviewed-journals outputs/reviewed_journals/reviewed_journals.json \
+  --output outputs/post_journal_trial_balance.md
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli preview-statement-line-mapping \
+  --post-journal-tb outputs/post_journal_trial_balance.json \
+  --output outputs/statement_line_mapping.md
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli render-draft-statements-from-tb \
+  --post-journal-tb outputs/post_journal_trial_balance.json \
+  --mapping outputs/statement_line_mapping.json \
+  --output-dir outputs/draft_statements
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli inspect-statement-chain-readiness \
+  --state outputs/engagement_state.json \
+  --artifact-dir outputs
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \
   --facts outputs/bank_statement_facts.json \
   --output outputs/bank_continuity.md

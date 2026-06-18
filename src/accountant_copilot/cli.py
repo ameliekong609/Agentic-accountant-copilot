@@ -2332,6 +2332,173 @@ def _export_reviewed_journals_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_post_journal_tb(payload: dict) -> str:
+    lines = [f"# Post-Journal Trial Balance — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend([
+        f"- Accounts: {summary['accounts']}",
+        f"- Journals included: {summary['journals_included']}",
+        f"- Excluded journals: {summary['excluded_journals']}",
+        f"- Balanced movements: {summary['balanced_movements']}",
+        f"- Findings: {summary['findings']}",
+        "",
+        "## Accounts",
+    ])
+    for row in payload["accounts"]:
+        lines.append(f"- {row['account_id']} {row['code']} {row['name']} opening={row['opening_balance']} debits={row['debits']} credits={row['credits']} ending={row['ending_balance']}")
+    if payload["findings"]:
+        lines.extend(["", "## Findings"])
+        for item in payload["findings"]:
+            lines.append(f"- {item['category']}: {item.get('detail', item.get('adjustment_id', ''))}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _build_post_journal_tb_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    reviewed = json.loads(Path(args.reviewed_journals).read_text())
+    reviewed_ids = {row.get("adjustment_id") for row in reviewed.get("journals", [])}
+    journals = [proposal for proposal in state.adjustment_proposals if proposal.status == "approved" and proposal.adjustment_id in reviewed_ids]
+    findings: list[dict] = []
+    account_rows = []
+    account_by_id = {account.account_id: account for account in state.chart_accounts}
+    movement_by_account: dict[str, dict[str, Decimal]] = {account.account_id: {"debits": Decimal("0.00"), "credits": Decimal("0.00")} for account in state.chart_accounts}
+    total_debits = Decimal("0.00")
+    total_credits = Decimal("0.00")
+    for proposal in journals:
+        if "pending_review_offset" in {proposal.debit_account, proposal.credit_account}:
+            findings.append({"category": "post_journal_tb_placeholder_offset", "adjustment_id": proposal.adjustment_id, "detail": "Approved journal still has pending_review_offset."})
+            continue
+        if proposal.debit_account not in account_by_id or proposal.credit_account not in account_by_id:
+            findings.append({"category": "post_journal_tb_missing_account", "adjustment_id": proposal.adjustment_id, "detail": "Approved journal references a missing account."})
+            continue
+        amount = _money_decimal(proposal.amount)
+        movement_by_account[proposal.debit_account]["debits"] += amount
+        movement_by_account[proposal.credit_account]["credits"] += amount
+        total_debits += amount
+        total_credits += amount
+    for account in sorted(state.chart_accounts, key=lambda item: item.account_id):
+        opening = _money_decimal(account.opening_balance)
+        debits = movement_by_account[account.account_id]["debits"]
+        credits = movement_by_account[account.account_id]["credits"]
+        ending = opening + debits - credits
+        account_rows.append({
+            "account_id": account.account_id,
+            "code": account.code,
+            "name": account.name,
+            "type": account.type,
+            "presentation_group": account.presentation_group,
+            "opening_balance": _money_string(opening),
+            "debits": _money_string(debits),
+            "credits": _money_string(credits),
+            "ending_balance": _money_string(ending),
+        })
+    excluded = len([p for p in state.adjustment_proposals if p.status != "approved"]) + len([p for p in state.adjustment_proposals if p.status == "approved" and p.adjustment_id not in reviewed_ids])
+    balanced = total_debits == total_credits and not findings
+    payload = {"engagement_id": state.engagement_id, "entity_name": state.entity_name, "accounts": account_rows, "findings": findings, "summary": {"accounts": len(account_rows), "journals_included": len(journals), "excluded_journals": excluded, "balanced_movements": balanced, "findings": len(findings)}}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_post_journal_tb(payload))
+    output.with_suffix(".json").write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported post-journal trial balance → {output}")
+    return 0 if balanced else 1
+
+
+def _statement_for_account_type(account_type: str) -> str | None:
+    if account_type in {"asset", "liability", "equity"}:
+        return "balance_sheet"
+    if account_type in {"income", "revenue", "expense"}:
+        return "profit_and_loss"
+    return None
+
+
+def _format_statement_mapping(payload: dict) -> str:
+    lines = [f"# Statement Line Mapping Preview — {payload['entity_name']}", ""]
+    lines.extend([f"- Mapped accounts: {payload['summary']['mapped_accounts']}", f"- Findings: {payload['summary']['findings']}", "", "## Mapped accounts"])
+    for row in payload["mapped_accounts"]:
+        lines.append(f"- {row['account_id']} → {row['statement']} / {row['line']} ending={row['ending_balance']}")
+    if payload["findings"]:
+        lines.extend(["", "## Findings"])
+        for item in payload["findings"]:
+            lines.append(f"- {item['category']}: {item.get('account_id', '')}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _preview_statement_line_mapping_command(args: argparse.Namespace) -> int:
+    tb = json.loads(Path(args.post_journal_tb).read_text())
+    mapped = []
+    findings = []
+    for account in tb.get("accounts", []):
+        ending = _money_decimal(account.get("ending_balance"))
+        if ending == Decimal("0.00"):
+            continue
+        statement = _statement_for_account_type(account.get("type", ""))
+        if not statement or not account.get("presentation_group"):
+            findings.append({"category": "statement_mapping_unmapped_account", "account_id": account.get("account_id"), "recommended_action": "Assign account type and presentation group before rendering draft statements."})
+            continue
+        mapped.append({"account_id": account["account_id"], "code": account.get("code"), "name": account.get("name"), "statement": statement, "line": account.get("presentation_group"), "ending_balance": account.get("ending_balance"), "type": account.get("type")})
+    payload = {"engagement_id": tb.get("engagement_id"), "entity_name": tb.get("entity_name"), "mapped_accounts": mapped, "findings": findings, "summary": {"mapped_accounts": len(mapped), "findings": len(findings)}}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_statement_mapping(payload))
+    output.with_suffix(".json").write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported statement line mapping preview → {output}")
+    return 0 if not findings else 1
+
+
+def _format_draft_statements(payload: dict) -> str:
+    lines = [f"# Draft Financial Statements — {payload['entity_name']}", "", "Status: internal_review_only", ""]
+    for section in ["profit_and_loss", "balance_sheet"]:
+        lines.extend([f"## {section.replace('_', ' ').title()}"])
+        for line, amount in sorted(payload[section].items()):
+            lines.append(f"- {line}: {amount}")
+        lines.append("")
+    lines.extend(["## Control references"] + [f"- {ref}" for ref in payload.get("control_refs", [])])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_draft_statements_from_tb_command(args: argparse.Namespace) -> int:
+    tb = json.loads(Path(args.post_journal_tb).read_text())
+    mapping = json.loads(Path(args.mapping).read_text())
+    findings = list(tb.get("findings", [])) + list(mapping.get("findings", []))
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pl: dict[str, Decimal] = {}
+    bs: dict[str, Decimal] = {}
+    for row in mapping.get("mapped_accounts", []):
+        target = pl if row["statement"] == "profit_and_loss" else bs
+        target[row["line"]] = target.get(row["line"], Decimal("0.00")) + _money_decimal(row.get("ending_balance"))
+    payload = {"engagement_id": tb.get("engagement_id"), "entity_name": tb.get("entity_name"), "status": "internal_review_only", "profit_and_loss": {k: _money_string(v) for k, v in pl.items()}, "balance_sheet": {k: _money_string(v) for k, v in bs.items()}, "control_refs": [str(Path(args.post_journal_tb)), str(Path(args.mapping))], "findings": findings, "summary": {"mapping_findings": len(mapping.get("findings", [])), "tb_findings": len(tb.get("findings", []))}}
+    (output_dir / "draft_statements.json").write_text(json.dumps(payload, indent=2, sort_keys=True))
+    (output_dir / "draft_statements.md").write_text(_format_draft_statements(payload))
+    print(f"Exported draft statements → {output_dir}")
+    return 0 if not findings else 1
+
+
+def _inspect_statement_chain_readiness_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    artifact_dir = Path(args.artifact_dir)
+    required = ["post_journal_trial_balance.json", "statement_line_mapping.json", "draft_statements/draft_statements.json", "reviewed_journals/reviewed_journals.json"]
+    missing = [name for name in required if not (artifact_dir / name).exists()]
+    blockers = []
+    if state.coa_review_status != "approved":
+        blockers.append("CoA is not approved")
+    if state.adjustment_proposals and any(p.status != "approved" for p in state.adjustment_proposals):
+        blockers.append("Journal proposals remain pending/rejected")
+    if not _final_signoff_decision(state):
+        blockers.append("Final sign-off missing")
+    ready = not missing and not blockers
+    payload = {"engagement_id": state.engagement_id, "statement_chain_ready": ready, "missing_artifacts": missing, "blockers": blockers}
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"Statement chain ready: {'YES' if ready else 'NO'}")
+        for item in missing:
+            print(f"Missing: {item}")
+        for item in blockers:
+            print(f"Blocker: {item}")
+    return 0 if ready else 1
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -2871,6 +3038,9 @@ def _format_journal_tb_impact(state: EngagementState, state_path: Path) -> str:
         ("Applied journal decisions", "applied_journal_decisions.json"),
         ("TB impact preview", "tb_impact_preview.md"),
         ("Reviewed journals", "reviewed_journals/reviewed_journals.md"),
+        ("Post-journal trial balance", "post_journal_trial_balance.md"),
+        ("Statement line mapping", "statement_line_mapping.md"),
+        ("Draft statements", "draft_statements/draft_statements.md"),
     ]
     lines.append("## Linked artifacts")
     found = False
@@ -4370,6 +4540,41 @@ def build_parser() -> argparse.ArgumentParser:
     reviewed_journals_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
     reviewed_journals_parser.add_argument("--output-dir", default="outputs/reviewed_journals")
     reviewed_journals_parser.set_defaults(func=_export_reviewed_journals_command)
+
+    post_journal_tb_parser = subparsers.add_parser(
+        "build-post-journal-tb",
+        help="Build a post-journal trial balance from CoA opening balances and reviewed journals.",
+    )
+    post_journal_tb_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    post_journal_tb_parser.add_argument("--reviewed-journals", required=True)
+    post_journal_tb_parser.add_argument("--output", default="outputs/post_journal_trial_balance.md")
+    post_journal_tb_parser.set_defaults(func=_build_post_journal_tb_command)
+
+    statement_mapping_parser = subparsers.add_parser(
+        "preview-statement-line-mapping",
+        help="Preview statement line mapping from a post-journal trial balance.",
+    )
+    statement_mapping_parser.add_argument("--post-journal-tb", required=True)
+    statement_mapping_parser.add_argument("--output", default="outputs/statement_line_mapping.md")
+    statement_mapping_parser.set_defaults(func=_preview_statement_line_mapping_command)
+
+    draft_from_tb_parser = subparsers.add_parser(
+        "render-draft-statements-from-tb",
+        help="Render internal-review-only draft statements from post-journal TB and mapping preview.",
+    )
+    draft_from_tb_parser.add_argument("--post-journal-tb", required=True)
+    draft_from_tb_parser.add_argument("--mapping", required=True)
+    draft_from_tb_parser.add_argument("--output-dir", default="outputs/draft_statements")
+    draft_from_tb_parser.set_defaults(func=_render_draft_statements_from_tb_command)
+
+    statement_chain_parser = subparsers.add_parser(
+        "inspect-statement-chain-readiness",
+        help="Inspect readiness of reviewed-journal to draft-statement artifact chain.",
+    )
+    statement_chain_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    statement_chain_parser.add_argument("--artifact-dir", default="outputs")
+    statement_chain_parser.add_argument("--json", action="store_true")
+    statement_chain_parser.set_defaults(func=_inspect_statement_chain_readiness_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",
