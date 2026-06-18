@@ -46,8 +46,11 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "Resolve source issue" in source
     assert "Editable CoA review table" in source
     assert "Build reviewed TB and draft statements" in source
-    assert "2 Sequential workflow" in source
-    assert "not a separate batch runner" in source
+    assert "2 Intake & inventory" in source
+    assert "3 Extract facts" in source
+    assert "4 Match & review sources" in source
+    assert "5 CoA & mappings" in source
+    assert "6 Trial balance & statements" in source
     assert "Document inventory review" in source
 
 
@@ -201,6 +204,25 @@ def test_final_package_preview_prioritizes_statement_and_manifest_artifacts(tmp_
     assert preview[0]["kind"] == "statement"
     assert preview[1]["label"] == "Release candidate manifest"
     assert preview[2]["label"] == "Final release manifest"
+
+
+def test_workflow_stage_groups_break_apart_the_sequence():
+    from accountant_copilot.review_app import _workflow_stage_groups, _workflow_steps
+
+    steps = _workflow_steps("inputs", "outputs/raw_inputs_pdf_extraction", "outputs/raw_inputs_pdf_extraction/engagement_state.json")
+    groups = _workflow_stage_groups(steps)
+
+    assert [group["title"] for group in groups] == [
+        "2 Intake & inventory",
+        "3 Extract facts",
+        "4 Match & review sources",
+        "5 CoA & mappings",
+        "6 Trial balance & statements",
+        "7 Accountant review",
+        "8 Final package",
+    ]
+    assert [step["label"] for step in groups[0]["steps"]] == ["Run intake", "Build document inventory"]
+    assert [step["label"] for step in groups[1]["steps"]] == ["Extract accounting facts"]
 
 
 def test_workflow_steps_embed_outputs_and_review_actions():

@@ -250,6 +250,20 @@ def _run_step_command(command: Any, cwd: Path) -> list[subprocess.CompletedProce
     return [_run_cli(list(args), cwd) for args in commands]
 
 
+def _workflow_stage_groups(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_label = {step["label"]: step for step in steps}
+    definitions = [
+        ("2 Intake & inventory", ["Run intake", "Build document inventory"]),
+        ("3 Extract facts", ["Extract accounting facts"]),
+        ("4 Match & review sources", ["Match source facts"]),
+        ("5 CoA & mappings", ["Build CoA and mappings"]),
+        ("6 Trial balance & statements", ["Build reviewed TB and draft statements"]),
+        ("7 Accountant review", ["Build review packet"]),
+        ("8 Final package", ["Build release candidate", "Final export"]),
+    ]
+    return [{"title": title, "steps": [by_label[label] for label in labels if label in by_label]} for title, labels in definitions]
+
+
 def _workflow_result_summary(step: dict[str, Any], results: list[subprocess.CompletedProcess[str]], outputs_present: int, outputs_total: int) -> dict[str, Any]:
     failures = [result for result in results if result.returncode != 0]
     if failures:
@@ -416,9 +430,9 @@ def _render_document_inventory_review(artifact_dir: Path) -> None:
     st.data_editor(rows, use_container_width=True, key="inline_document_inventory_review")
 
 
-def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifact_dir: Path) -> None:
-    st.header("Sequential workflow")
-    st.write("This is the working sequence, not a separate batch runner. Click one step, review its output here, then continue to the next step.")
+def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifact_dir: Path, title: str = "Workflow stage") -> None:
+    st.header(title)
+    st.write("Work through this stage, review its output here, then move to the next stage tab.")
     for idx, step in enumerate(steps, start=1):
         with st.expander(f"{idx}. {step['label']}", expanded=idx <= 3):
             st.write(step["description"])
@@ -647,17 +661,19 @@ def main() -> None:
             st.caption("Use `ingest-raw-inputs` after staging new uploads.")
 
     workflow_steps = _workflow_steps(str(input_dir), str(artifact_dir), str(state_path))
-    setup_tab, upload_tab, workflow_tab, source_review_tab, tb_tab, draft_tab, review_tab, artifacts_tab, final_tab, apply_tab = st.tabs([
+    stage_groups = _workflow_stage_groups(workflow_steps)
+    setup_tab, upload_tab, intake_tab, extract_tab, match_tab, coa_tab, tb_tab, review_tab, final_tab, artifacts_tab, apply_tab = st.tabs([
         "0 Engagement setup",
         "1 Upload source documents",
-        "2 Sequential workflow",
-        "3 Source Extraction Review",
-        "4 Reviewed Trial Balance",
-        "5 Draft Statements",
-        "6 Accountant Review",
-        "7 Artifacts",
-        "8 Final Output",
-        "9 Apply decisions",
+        "2 Intake & inventory",
+        "3 Extract facts",
+        "4 Match & review sources",
+        "5 CoA & mappings",
+        "6 Trial balance & statements",
+        "7 Accountant review",
+        "8 Final package",
+        "9 Artifacts",
+        "10 Apply decisions",
     ])
 
     with setup_tab:
@@ -679,22 +695,29 @@ def main() -> None:
         with st.expander("Technical intake command", expanded=False):
             st.code(f"PYTHONPATH=src python3.11 -m accountant_copilot.cli ingest-raw-inputs --input-dir {input_dir} --state {state_path}")
 
-    with workflow_tab:
-        _render_workflow_orchestrator(workflow_steps, repo_root, artifact_dir)
+    with intake_tab:
+        _render_workflow_orchestrator(stage_groups[0]["steps"], repo_root, artifact_dir, stage_groups[0]["title"])
 
-    with source_review_tab:
+    with extract_tab:
+        _render_workflow_orchestrator(stage_groups[1]["steps"], repo_root, artifact_dir, stage_groups[1]["title"])
+
+    with match_tab:
+        _render_workflow_orchestrator(stage_groups[2]["steps"], repo_root, artifact_dir, stage_groups[2]["title"])
         _render_source_extraction_review(artifact_dir)
 
-    with tb_tab:
-        _render_trial_balance_review(artifact_dir)
+    with coa_tab:
+        _render_workflow_orchestrator(stage_groups[3]["steps"], repo_root, artifact_dir, stage_groups[3]["title"])
 
-    with draft_tab:
+    with tb_tab:
+        _render_workflow_orchestrator(stage_groups[4]["steps"], repo_root, artifact_dir, stage_groups[4]["title"])
+        _render_trial_balance_review(artifact_dir)
         _render_draft_statements_review(artifact_dir)
 
     workbench = _load_json(artifact_dir / "accountant_review_workbench.json", {})
     blockers = _load_json(artifact_dir / "release_blockers.json", {"blockers": []})
 
     with review_tab:
+        _render_workflow_orchestrator(stage_groups[5]["steps"], repo_root, artifact_dir, stage_groups[5]["title"])
         _render_blockers(blockers.get("blockers", []))
         if not workbench:
             st.warning("No accountant_review_workbench.json found. Run export-accountant-review-workbench first.")
@@ -718,6 +741,7 @@ def main() -> None:
                 st.text_area(label, path.read_text()[:20000], height=220, key=f"artifact_{rel}")
 
     with final_tab:
+        _render_workflow_orchestrator(stage_groups[6]["steps"], repo_root, artifact_dir, stage_groups[6]["title"])
         _render_final_output(artifact_dir)
 
     with apply_tab:
