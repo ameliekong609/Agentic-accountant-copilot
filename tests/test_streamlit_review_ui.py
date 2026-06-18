@@ -60,6 +60,17 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "Document inventory review" in source
 
 
+def test_upload_step_does_not_show_stale_workspace_dashboard_before_upload():
+    from accountant_copilot.review_app import DEFAULT_ARTIFACT_DIR, DEFAULT_INPUT_DIR, DEFAULT_STATE
+
+    source = APP.read_text()
+
+    assert "with upload_tab:\n        _render_status_dashboard(artifact_dir)" not in source
+    assert DEFAULT_ARTIFACT_DIR == Path("outputs/streamlit_review_workspace")
+    assert DEFAULT_STATE == Path("outputs/streamlit_review_workspace/engagement_state.json")
+    assert DEFAULT_INPUT_DIR == Path("outputs/streamlit_review_workspace/uploads")
+
+
 def test_document_inventory_rows_are_reviewable_inline(tmp_path: Path):
     from accountant_copilot.review_app import _document_inventory_rows
 
@@ -290,6 +301,17 @@ def test_workflow_orchestrator_does_not_show_misleading_progress_bar():
     source = inspect.getsource(_render_workflow_orchestrator)
 
     assert "st.progress" not in source
+
+
+def test_workflow_orchestrator_does_not_show_ready_copy_before_run():
+    import inspect
+    from accountant_copilot.review_app import _render_workflow_orchestrator
+
+    source = inspect.getsource(_render_workflow_orchestrator)
+
+    assert "Output:" not in source
+    assert "readiness_text" not in source
+    assert "_workflow_output_readiness_text" not in source
 
 
 def test_workflow_orchestrator_renders_inventory_review_once_per_pass():

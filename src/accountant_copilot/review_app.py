@@ -21,9 +21,9 @@ except ModuleNotFoundError:  # pragma: no cover
     st = None  # type: ignore[assignment]
 
 
-DEFAULT_STATE = Path("outputs/raw_inputs_pdf_extraction/engagement_state.json")
-DEFAULT_ARTIFACT_DIR = Path("outputs/raw_inputs_pdf_extraction")
-DEFAULT_INPUT_DIR = Path("inputs")
+DEFAULT_STATE = Path("outputs/streamlit_review_workspace/engagement_state.json")
+DEFAULT_ARTIFACT_DIR = Path("outputs/streamlit_review_workspace")
+DEFAULT_INPUT_DIR = Path("outputs/streamlit_review_workspace/uploads")
 
 
 def _main_tab_labels() -> list[str]:
@@ -469,17 +469,7 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifa
     for idx, step in enumerate(steps, start=1):
         with st.expander(f"{idx}. {step['label']}", expanded=idx <= 3):
             st.write(step["description"])
-            st.info(f"Output: {step.get('user_output', 'Outputs will appear after this step runs.')}")
-            st.caption(f"Human review: {step.get('review_action', 'Continue to the next step unless the status asks for review.')}")
-            outputs = [Path(path) for path in step.get("outputs", [])]
-            complete_count = sum(path.exists() for path in outputs)
-            readiness_text = _workflow_output_readiness_text(step.get("user_output", step["label"]), complete_count, len(outputs))
-            if outputs and complete_count >= len(outputs):
-                st.success(readiness_text)
-            elif outputs:
-                st.warning(readiness_text)
-            else:
-                st.info(readiness_text)
+            st.caption("Click the button to run this step. The output and review controls will appear here after it runs.")
             button_key = _workflow_step_button_key(title, idx, step)
             if st.button(step["label"], key=button_key):
                 results = _run_step_command(step["command"], cwd)
@@ -707,7 +697,6 @@ def main() -> None:
     upload_tab, intake_tab, extract_tab, match_tab, coa_tab, tb_tab, review_tab, final_tab, artifacts_tab, apply_tab = st.tabs(_main_tab_labels())
 
     with upload_tab:
-        _render_status_dashboard(artifact_dir)
         st.header("Upload source documents")
         st.write("Upload PDFs, images, CSVs, spreadsheets, or other source files into the engagement input folder. This does not approve accounting treatment.")
         uploaded_files = st.file_uploader("Upload source documents", accept_multiple_files=True)
