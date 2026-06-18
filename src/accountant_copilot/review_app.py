@@ -112,18 +112,24 @@ def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[
         {
             "label": "Run intake",
             "description": "Register uploaded source documents and create evidence/extraction review records.",
+            "user_output": "Documents are registered and ready for inventory.",
+            "review_action": "No accountant review yet. Continue to document inventory.",
             "command": ["ingest-raw-inputs", "--state", state_path, "--input-dir", input_dir],
             "outputs": [state_path],
         },
         {
             "label": "Build document inventory",
             "description": "Summarize uploaded documents and page-level evidence for accountant review.",
+            "user_output": "Document inventory is ready for review.",
+            "review_action": "Skim the inventory now if document names/types look unexpected; otherwise continue to extraction.",
             "command": ["export-document-inventory", "--state", state_path, "--output", f"{artifact_dir}/document_inventory.md"],
             "outputs": [f"{artifact_dir}/document_inventory.md"],
         },
         {
             "label": "Extract accounting facts",
             "description": "Extract bank, invoice, distribution/tax, and broker trade facts from source evidence.",
+            "user_output": "Accounting facts and extraction issues are ready.",
+            "review_action": "Review source extraction issues now, before matching.",
             "command": [
                 ["export-bank-statement-facts", "--state", state_path, "--output", f"{artifact_dir}/bank_statement_facts.md"],
                 ["export-bank-transactions", "--state", state_path, "--output", f"{artifact_dir}/bank_transactions.md"],
@@ -142,6 +148,8 @@ def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[
         {
             "label": "Match source facts",
             "description": "Match invoice, distribution/tax, and broker facts to bank transaction evidence.",
+            "user_output": "Source fact matches are ready.",
+            "review_action": "Review unmatched or uncertain matches now; continue only when expected matches look sensible.",
             "command": [
                 "match-source-facts",
                 "--bank-transactions",
@@ -160,6 +168,8 @@ def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[
         {
             "label": "Build CoA and mappings",
             "description": "Import candidate accounts and suggest unapproved source-fact-to-CoA mappings.",
+            "user_output": "CoA and mapping suggestions are ready.",
+            "review_action": "Review and approve CoA/mapping suggestions now.",
             "command": [
                 ["import-coa-from-prior-statements", "--state", state_path, "--output", f"{artifact_dir}/prior_statement_coa_import.md"],
                 [
@@ -181,6 +191,8 @@ def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[
         {
             "label": "Build review packet",
             "description": "Refresh release blockers, accountant workbench, review UI bundle, and review packet links.",
+            "user_output": "Accountant review packet is ready.",
+            "review_action": "Review blockers, CoA decisions, journals, draft approval, and sign-off now.",
             "command": [
                 ["export-accountant-review-workbench", "--state", state_path, "--artifact-dir", artifact_dir, "--output", f"{artifact_dir}/accountant_review_workbench.json"],
                 ["explain-release-blockers", "--state", state_path, "--artifact-dir", artifact_dir, "--output", f"{artifact_dir}/release_blockers.md"],
@@ -191,6 +203,8 @@ def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[
         {
             "label": "Build reviewed TB and draft statements",
             "description": "Export reviewed journals, build post-journal TB, preview statement mapping, and render internal-review draft statements.",
+            "user_output": "Reviewed trial balance and internal draft statements are ready.",
+            "review_action": "Review the trial balance and draft statements now.",
             "command": [
                 ["export-reviewed-journals", "--state", state_path, "--output-dir", f"{artifact_dir}/reviewed_journals"],
                 ["build-post-journal-tb", "--state", state_path, "--reviewed-journals", f"{artifact_dir}/reviewed_journals/reviewed_journals.json", "--output", f"{artifact_dir}/post_journal_trial_balance.md"],
@@ -207,12 +221,16 @@ def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[
         {
             "label": "Build release candidate",
             "description": "Package controlled release artifacts after accountant approvals clear blockers.",
+            "user_output": "Release candidate package is ready.",
+            "review_action": "Review release package blockers now.",
             "command": ["build-release-candidate-package", "--state", state_path, "--artifact-dir", artifact_dir, "--output-dir", f"{artifact_dir}/release_candidate"],
             "outputs": [f"{artifact_dir}/release_candidate/release_candidate_manifest.json"],
         },
         {
             "label": "Final export",
             "description": "Export final manifest only after final sign-off and clean release-candidate verification.",
+            "user_output": "Final release manifest is ready.",
+            "review_action": "Review final output package now.",
             "command": [
                 "export-final-release-manifest",
                 "--state",
@@ -373,10 +391,12 @@ def _render_source_extraction_review(artifact_dir: Path) -> None:
 
 def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path) -> None:
     st.header("Guided workflow")
-    st.write("Run the app from upload through release. Each button calls the deterministic backend command and shows status/output here.")
+    st.write("Click one step at a time. After each step finishes, this screen tells you what output was produced and whether a human review is needed before continuing.")
     for idx, step in enumerate(steps, start=1):
         with st.expander(f"{idx}. {step['label']}", expanded=idx <= 3):
             st.write(step["description"])
+            st.info(f"Output: {step.get('user_output', 'Outputs will appear after this step runs.')}")
+            st.caption(f"Human review: {step.get('review_action', 'Continue to the next step unless the status asks for review.')}")
             outputs = [Path(path) for path in step.get("outputs", [])]
             complete_count = sum(path.exists() for path in outputs)
             st.progress(complete_count / len(outputs) if outputs else 0)
@@ -388,6 +408,8 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path) -> Non
                 summary = _workflow_result_summary(step, results, refreshed_count, len(refreshed_outputs))
                 if summary["status"] == "Done":
                     st.success(summary["message"])
+                    st.info(f"Output ready: {step.get('user_output', 'This step produced its expected outputs.')}")
+                    st.warning(f"Review now: {step.get('review_action', 'Continue to the next step if no review is needed.')}")
                 elif summary["status"] == "Check outputs":
                     st.warning(summary["message"])
                 else:

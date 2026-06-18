@@ -171,6 +171,19 @@ def test_final_package_preview_prioritizes_statement_and_manifest_artifacts(tmp_
     assert preview[2]["label"] == "Final release manifest"
 
 
+def test_workflow_steps_embed_outputs_and_review_actions():
+    from accountant_copilot.review_app import _workflow_steps
+
+    steps = _workflow_steps("inputs", "outputs/raw_inputs_pdf_extraction", "outputs/raw_inputs_pdf_extraction/engagement_state.json")
+    by_label = {step["label"]: step for step in steps}
+
+    assert by_label["Run intake"]["user_output"] == "Documents are registered and ready for inventory."
+    assert by_label["Extract accounting facts"]["review_action"] == "Review source extraction issues now, before matching."
+    assert by_label["Build CoA and mappings"]["review_action"] == "Review and approve CoA/mapping suggestions now."
+    assert by_label["Build reviewed TB and draft statements"]["review_action"] == "Review the trial balance and draft statements now."
+    assert by_label["Build release candidate"]["review_action"] == "Review release package blockers now."
+
+
 def test_workflow_result_summary_hides_raw_stdout_for_good_ux():
     from subprocess import CompletedProcess
     from accountant_copilot.review_app import _workflow_result_summary
