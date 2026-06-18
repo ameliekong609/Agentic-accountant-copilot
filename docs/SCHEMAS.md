@@ -225,3 +225,9 @@ CSV source intake now validates required `date`, `description`, and `amount` col
 `propose-journals` creates pending-review journal proposals only from approved CoA mapping decisions. Each proposal is evidence-linked, uses a `pending_review_offset` side where the accounting treatment still needs review, and starts with `approved=0`; missing accounts become findings instead of forced journals.
 
 Review packets now include `journal_tb_impact.md`, summarising CoA status, linked CoA/mapping/journal artifacts, pending/approved accounts, pending journal proposals, and the accountant review requirements before TB/final-statement reliance.
+
+`export-journal-decision-template` and `apply-journal-decisions` provide the accountant approval round trip for journal proposals. Approval requires reviewer/rationale and resolves any `pending_review_offset` to a valid CoA account before the proposal can be marked approved.
+
+`preview-tb-impact` groups approved journal proposals by account and reports debit/credit impact, excluded unapproved journals, placeholder offsets, missing accounts, and balance status.
+
+`export-reviewed-journals` exports only approved journals to JSON, CSV, and markdown, and fails if any approved journal still contains `pending_review_offset`.

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import zipfile
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Sequence
 
@@ -2108,6 +2109,229 @@ def _propose_journals_command(args: argparse.Namespace) -> int:
     return 1 if proposals or findings else 0
 
 
+def _export_journal_decision_template_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    decisions = []
+    for proposal in sorted(state.adjustment_proposals, key=lambda item: item.adjustment_id):
+        decisions.append({
+            "adjustment_id": proposal.adjustment_id,
+            "description": proposal.description,
+            "date": proposal.date,
+            "debit_account": proposal.debit_account,
+            "credit_account": proposal.credit_account,
+            "amount": proposal.amount,
+            "source_evidence_refs": proposal.source_evidence_refs,
+            "action": "",
+            "offset_account_id": "",
+            "approved_by": "",
+            "rationale": "",
+        })
+    payload = {"engagement_id": state.engagement_id, "journal_decisions": decisions}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported journal decision template → {output}")
+    return 0
+
+
+def _validate_journal_decision(item: dict) -> tuple[str, str, str, str, str | None]:
+    adjustment_id = item.get("adjustment_id")
+    action = item.get("action")
+    rationale = item.get("rationale")
+    approved_by = item.get("approved_by")
+    offset_account_id = item.get("offset_account_id") or None
+    if not adjustment_id:
+        _usage_error("journal decision missing adjustment_id")
+    if action not in {"approve", "reject"}:
+        _usage_error(f"invalid journal action for {adjustment_id}: {action}")
+    if not rationale:
+        _usage_error(f"journal decision for {adjustment_id} requires rationale")
+    if not approved_by:
+        _usage_error(f"journal decision for {adjustment_id} requires approved_by")
+    return str(adjustment_id), str(action), str(rationale), str(approved_by), offset_account_id
+
+
+def _apply_journal_decisions_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    payload = json.loads(Path(args.decisions).read_text())
+    proposal_by_id = {proposal.adjustment_id: proposal for proposal in state.adjustment_proposals}
+    account_by_id = {account.account_id: account for account in state.chart_accounts}
+    parsed = [_validate_journal_decision(item) for item in payload.get("journal_decisions", []) if item.get("action")]
+    for adjustment_id, action, _rationale, _approved_by, offset_account_id in parsed:
+        proposal = proposal_by_id.get(adjustment_id)
+        if proposal is None:
+            _usage_error(f"Unknown adjustment_id: {adjustment_id}")
+        if action == "approve" and "pending_review_offset" in {proposal.debit_account, proposal.credit_account}:
+            if not offset_account_id:
+                _usage_error(f"journal decision for {adjustment_id} requires offset_account_id before approval")
+            if offset_account_id not in account_by_id:
+                _usage_error(f"Unknown offset_account_id: {offset_account_id}")
+    applied_rows = []
+    approved = 0
+    rejected = 0
+    for adjustment_id, action, rationale, approved_by, offset_account_id in parsed:
+        proposal = proposal_by_id[adjustment_id]
+        if action == "approve" and offset_account_id:
+            if proposal.debit_account == "pending_review_offset":
+                proposal.debit_account = offset_account_id
+            if proposal.credit_account == "pending_review_offset":
+                proposal.credit_account = offset_account_id
+        proposal.status = "approved" if action == "approve" else "rejected"
+        selected = "approve_journal" if action == "approve" else "reject_journal"
+        decision = AccountantDecision(
+            decision_id=f"decision_{selected}_{len(state.decisions) + 1:04d}",
+            question=f"{selected} {adjustment_id}?",
+            selected_option=selected,
+            rationale=rationale,
+            status=DecisionStatus.APPROVED,
+            approved_by=approved_by,
+            evidence_refs=proposal.source_evidence_refs,
+        )
+        state.decisions.append(decision)
+        proposal.decision_id = decision.decision_id
+        if action == "approve":
+            approved += 1
+        else:
+            rejected += 1
+        applied_rows.append({"adjustment_id": adjustment_id, "action": action, "decision_id": decision.decision_id, "debit_account": proposal.debit_account, "credit_account": proposal.credit_account, "amount": proposal.amount})
+    if state.adjustment_proposals and not [proposal for proposal in state.adjustment_proposals if proposal.status != "approved"]:
+        state.adjustment_review_status = "approved"
+    elif applied_rows:
+        state.adjustment_review_status = "pending_review"
+    save_engagement_state(state_path, state)
+    output_payload = {"engagement_id": state.engagement_id, "applied_journal_decisions": applied_rows, "summary": {"approved": approved, "rejected": rejected, "applied": len(applied_rows)}}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(output_payload, indent=2, sort_keys=True))
+    print(f"Applied {len(applied_rows)} journal decisions → {output}")
+    return 0
+
+
+def _money_decimal(value: str | int | float | None) -> Decimal:
+    cleaned = _clean_money_amount(str(value or "0")) or "0.00"
+    return Decimal(cleaned.replace(",", ""))
+
+
+def _money_string(value: Decimal) -> str:
+    return f"{value.quantize(Decimal('0.01'))}"
+
+
+def _format_tb_impact_preview(payload: dict) -> str:
+    lines = [f"# Trial Balance Impact Preview — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend([f"- Approved journals included: {summary['approved_journals']}", f"- Excluded journals: {summary['excluded_journals']}", f"- Findings: {summary['findings']}", f"- Balanced: {summary['balanced']}", ""])
+    lines.append("## Account impacts")
+    if payload["account_impacts"]:
+        for account_id, impact in sorted(payload["account_impacts"].items()):
+            lines.extend([f"- {account_id}", f"  - Debits: {impact['debits']}", f"  - Credits: {impact['credits']}", f"  - Net debit/(credit): {impact['net_debit_credit']}", f"  - Journals: {', '.join(impact['journal_refs'])}"])
+    else:
+        lines.append("- No approved journal impacts.")
+    if payload["findings"]:
+        lines.extend(["", "## Findings"])
+        for item in payload["findings"]:
+            lines.extend([f"- {item['category']}: {item.get('adjustment_id')}", f"  - Action: {item['recommended_action']}"])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _preview_tb_impact_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    account_ids = {account.account_id for account in state.chart_accounts}
+    impacts: dict[str, dict[str, object]] = {}
+    findings: list[dict] = []
+    approved_journals = 0
+    excluded_journals = 0
+    total_debits = Decimal("0.00")
+    total_credits = Decimal("0.00")
+
+    def ensure_account(account_id: str) -> dict[str, object]:
+        return impacts.setdefault(account_id, {"debits": Decimal("0.00"), "credits": Decimal("0.00"), "journal_refs": []})
+
+    for proposal in state.adjustment_proposals:
+        if proposal.status != "approved":
+            excluded_journals += 1
+            findings.append({"category": "tb_preview_unapproved_journal_excluded", "adjustment_id": proposal.adjustment_id, "recommended_action": "Approve or reject this journal before TB reliance."})
+            continue
+        if "pending_review_offset" in {proposal.debit_account, proposal.credit_account}:
+            findings.append({"category": "tb_preview_placeholder_offset", "adjustment_id": proposal.adjustment_id, "recommended_action": "Resolve pending_review_offset before TB impact reliance."})
+            continue
+        missing = [account_id for account_id in [proposal.debit_account, proposal.credit_account] if account_id not in account_ids]
+        if missing:
+            findings.append({"category": "tb_preview_missing_account", "adjustment_id": proposal.adjustment_id, "missing_accounts": missing, "recommended_action": "Resolve missing CoA account IDs before TB impact reliance."})
+            continue
+        amount = _money_decimal(proposal.amount)
+        debit_impact = ensure_account(proposal.debit_account)
+        credit_impact = ensure_account(proposal.credit_account)
+        debit_impact["debits"] = debit_impact["debits"] + amount
+        credit_impact["credits"] = credit_impact["credits"] + amount
+        debit_impact["journal_refs"].append(proposal.adjustment_id)
+        credit_impact["journal_refs"].append(proposal.adjustment_id)
+        total_debits += amount
+        total_credits += amount
+        approved_journals += 1
+    account_impacts = {}
+    for account_id, impact in impacts.items():
+        debits = impact["debits"]
+        credits = impact["credits"]
+        account_impacts[account_id] = {"debits": _money_string(debits), "credits": _money_string(credits), "net_debit_credit": _money_string(debits - credits), "journal_refs": impact["journal_refs"]}
+    balanced = total_debits == total_credits and not any(item["category"] in {"tb_preview_placeholder_offset", "tb_preview_missing_account"} for item in findings)
+    payload = {"engagement_id": state.engagement_id, "entity_name": state.entity_name, "account_impacts": account_impacts, "findings": findings, "summary": {"approved_journals": approved_journals, "excluded_journals": excluded_journals, "findings": len(findings), "balanced": balanced}}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_format_tb_impact_preview(payload))
+    output.with_suffix(".json").write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported TB impact preview → {output}")
+    return 0 if balanced and not findings else 1
+
+
+def _format_reviewed_journals_markdown(payload: dict) -> str:
+    lines = [f"# Reviewed Journals — {payload['entity_name']}", ""]
+    summary = payload["summary"]
+    lines.extend([f"- Exported: {summary['exported']}", f"- Excluded pending/rejected: {summary['excluded_pending_or_rejected']}", ""])
+    if payload["journals"]:
+        lines.append("## Approved journals")
+        for item in payload["journals"]:
+            lines.extend([f"- {item['adjustment_id']} {item['date']} {item['description']}", f"  - DR {item['debit_account']} / CR {item['credit_account']}", f"  - Amount: {item['amount']}", f"  - Decision: {item.get('decision_id') or ''}", f"  - Evidence: {', '.join(item.get('source_evidence_refs', []))}"])
+    else:
+        lines.append("No approved journals exported.")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_reviewed_journals_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    approved = [proposal for proposal in state.adjustment_proposals if proposal.status == "approved"]
+    for proposal in approved:
+        if "pending_review_offset" in {proposal.debit_account, proposal.credit_account}:
+            print(f"Cannot export approved journal {proposal.adjustment_id}: pending_review_offset remains", file=sys.stderr)
+            return 1
+    rows = [
+        {
+            "adjustment_id": proposal.adjustment_id,
+            "date": proposal.date,
+            "description": proposal.description,
+            "debit_account": proposal.debit_account,
+            "credit_account": proposal.credit_account,
+            "amount": proposal.amount,
+            "decision_id": proposal.decision_id,
+            "source_evidence_refs": proposal.source_evidence_refs,
+        }
+        for proposal in approved
+    ]
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"engagement_id": state.engagement_id, "entity_name": state.entity_name, "journals": rows, "summary": {"exported": len(rows), "excluded_pending_or_rejected": len(state.adjustment_proposals) - len(rows)}}
+    (output_dir / "reviewed_journals.json").write_text(json.dumps(payload, indent=2, sort_keys=True))
+    fieldnames = ["adjustment_id", "date", "description", "debit_account", "credit_account", "amount", "decision_id", "source_evidence_refs"]
+    with (output_dir / "reviewed_journals.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({**row, "source_evidence_refs": ";".join(row["source_evidence_refs"])})
+    (output_dir / "reviewed_journals.md").write_text(_format_reviewed_journals_markdown(payload))
+    print(f"Exported reviewed journals → {output_dir}")
+    return 0
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -2632,6 +2856,8 @@ def _format_journal_tb_impact(state: EngagementState, state_path: Path) -> str:
         f"- Adjustment review status: {state.adjustment_review_status}",
         f"- CoA accounts: {len(state.chart_accounts)}",
         f"- Journal/adjustment proposals: {len(state.adjustment_proposals)}",
+        f"- Approved journals: {len([proposal for proposal in state.adjustment_proposals if proposal.status == 'approved'])}",
+        f"- Pending/rejected journals: {len([proposal for proposal in state.adjustment_proposals if proposal.status != 'approved'])}",
         "- Approved automatically: 0",
         "",
     ])
@@ -2641,6 +2867,10 @@ def _format_journal_tb_impact(state: EngagementState, state_path: Path) -> str:
         ("CoA mapping decision template", "coa_mapping_decisions_template.json"),
         ("Applied CoA mapping decisions", "applied_coa_mapping_decisions.json"),
         ("Journal proposals", "journal_proposals.md"),
+        ("Journal decision template", "journal_decisions_template.json"),
+        ("Applied journal decisions", "applied_journal_decisions.json"),
+        ("TB impact preview", "tb_impact_preview.md"),
+        ("Reviewed journals", "reviewed_journals/reviewed_journals.md"),
     ]
     lines.append("## Linked artifacts")
     found = False
@@ -4107,6 +4337,39 @@ def build_parser() -> argparse.ArgumentParser:
     journal_proposal_parser.add_argument("--output", default="outputs/journal_proposals.md")
     journal_proposal_parser.add_argument("--date", default=None)
     journal_proposal_parser.set_defaults(func=_propose_journals_command)
+
+    journal_template_parser = subparsers.add_parser(
+        "export-journal-decision-template",
+        help="Export a JSON decision template for pending journal proposals.",
+    )
+    journal_template_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    journal_template_parser.add_argument("--output", required=True)
+    journal_template_parser.set_defaults(func=_export_journal_decision_template_command)
+
+    journal_apply_parser = subparsers.add_parser(
+        "apply-journal-decisions",
+        help="Apply accountant approvals/rejections for journal proposals and resolve offset placeholders.",
+    )
+    journal_apply_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    journal_apply_parser.add_argument("--decisions", required=True)
+    journal_apply_parser.add_argument("--output", required=True)
+    journal_apply_parser.set_defaults(func=_apply_journal_decisions_command)
+
+    tb_preview_parser = subparsers.add_parser(
+        "preview-tb-impact",
+        help="Preview trial balance impact from approved journal proposals.",
+    )
+    tb_preview_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    tb_preview_parser.add_argument("--output", default="outputs/tb_impact_preview.md")
+    tb_preview_parser.set_defaults(func=_preview_tb_impact_command)
+
+    reviewed_journals_parser = subparsers.add_parser(
+        "export-reviewed-journals",
+        help="Export approved reviewed journals to JSON, CSV, and markdown.",
+    )
+    reviewed_journals_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    reviewed_journals_parser.add_argument("--output-dir", default="outputs/reviewed_journals")
+    reviewed_journals_parser.set_defaults(func=_export_reviewed_journals_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",

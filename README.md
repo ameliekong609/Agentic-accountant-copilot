@@ -446,6 +446,23 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli propose-journals \
   --applied-mappings outputs/applied_coa_mapping_decisions.json \
   --output outputs/journal_proposals.md
 
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-journal-decision-template \
+  --state outputs/engagement_state.json \
+  --output outputs/journal_decisions_template.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-journal-decisions \
+  --state outputs/engagement_state.json \
+  --decisions outputs/journal_decisions_template.json \
+  --output outputs/applied_journal_decisions.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli preview-tb-impact \
+  --state outputs/engagement_state.json \
+  --output outputs/tb_impact_preview.md
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-reviewed-journals \
+  --state outputs/engagement_state.json \
+  --output-dir outputs/reviewed_journals
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \
   --facts outputs/bank_statement_facts.json \
   --output outputs/bank_continuity.md
