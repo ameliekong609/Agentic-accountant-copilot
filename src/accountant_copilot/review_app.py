@@ -283,6 +283,26 @@ def _source_resolution_payload(issue: dict[str, Any], action: str, reviewer: str
     }
 
 
+def _save_source_resolution(artifact_dir: Path, payload: dict[str, Any]) -> Path:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    path = artifact_dir / "source_issue_resolutions.json"
+    existing = _load_json(path, {"resolutions": []})
+    resolutions = existing.setdefault("resolutions", [])
+    resolutions.append(payload)
+    path.write_text(json.dumps(existing, indent=2, sort_keys=True))
+    return path
+
+
+def _final_package_preview(artifact_dir: Path) -> list[dict[str, Any]]:
+    candidates = [
+        ("Draft financial statements", "statement", artifact_dir / "draft_statements" / "draft_statements.md"),
+        ("Release candidate manifest", "manifest", artifact_dir / "release_candidate" / "release_candidate_manifest.json"),
+        ("Final release manifest", "manifest", artifact_dir / "final_release_manifest.json"),
+        ("Review packet", "workpaper", artifact_dir / "review_packet" / "README.md"),
+    ]
+    return [{"label": label, "kind": kind, "path": path} for label, kind, path in candidates if path.exists()]
+
+
 def _coa_review_rows(workbench: dict[str, Any]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for account in workbench.get("sections", {}).get("coa_accounts", []):
@@ -322,7 +342,11 @@ def _render_source_extraction_review(artifact_dir: Path) -> None:
             reviewer = st.text_input("Reviewer", key=f"source_reviewer_{item['document_id']}_{item['layer']}")
             rationale = st.text_area("Rationale", key=f"source_rationale_{item['document_id']}_{item['layer']}")
             if action:
-                st.json(_source_resolution_payload(item, action, reviewer, rationale))
+                payload = _source_resolution_payload(item, action, reviewer, rationale)
+                st.json(payload)
+                if st.button("Save source issue resolution", key=f"save_source_resolution_{item['document_id']}_{item['layer']}"):
+                    saved_path = _save_source_resolution(artifact_dir, payload)
+                    st.success(f"Saved resolution to {saved_path.name}")
 
 
 def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path) -> None:
@@ -338,11 +362,14 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path) -> Non
             if st.button(step["label"], key=f"run_step_{idx}"):
                 results = _run_step_command(step["command"], cwd)
                 for result in results:
-                    st.write(f"Exit code: {result.returncode}")
-                    if result.stdout:
-                        st.code(result.stdout[-4000:])
-                    if result.stderr:
-                        st.error(result.stderr[-4000:])
+                    status = "completed" if result.returncode == 0 else "needs attention"
+                    st.write(f"Step status: {status}")
+                    with st.expander("Technical command output", expanded=result.returncode != 0):
+                        st.write(f"Exit code: {result.returncode}")
+                        if result.stdout:
+                            st.code(result.stdout[-4000:])
+                        if result.stderr:
+                            st.error(result.stderr[-4000:])
 
 
 def _render_engagement_setup(artifact_dir: Path, state_path: Path, input_dir: Path) -> None:
@@ -413,18 +440,27 @@ def _render_draft_statements_review(artifact_dir: Path) -> None:
 
 def _render_final_output(artifact_dir: Path) -> None:
     st.header("Final Output")
+    st.write("Clean package view for internal review: statements first, then release/final manifests and supporting workpapers.")
+    preview_items = _final_package_preview(artifact_dir)
+    if preview_items:
+        for item in preview_items:
+            path = item["path"]
+            with st.expander(f"{item['label']} ({item['kind']})", expanded=item["kind"] == "statement"):
+                st.caption(str(path))
+                if path.suffix == ".json":
+                    st.json(_load_json(path, {}))
+                else:
+                    st.text_area(item["label"], path.read_text()[:20000], height=260, key=f"final_preview_{path}")
+    else:
+        st.warning("No final package artifacts are available yet.")
     candidate = artifact_dir / "release_candidate" / "release_candidate_manifest.json"
     final_manifest = artifact_dir / "final_release_manifest.json"
     if candidate.exists():
         st.success("Release candidate package exists.")
-        st.caption(str(candidate))
-        st.json(_load_json(candidate, {}))
     else:
         st.warning("Release candidate has not been built yet.")
     if final_manifest.exists():
         st.success("Final release manifest exists.")
-        st.caption(str(final_manifest))
-        st.json(_load_json(final_manifest, {}))
     else:
         st.info("Final export is waiting for clean release candidate verification and accountant final sign-off.")
 
@@ -520,11 +556,13 @@ def main() -> None:
     input_dir = Path(_query_param("input_dir", app_args.input_dir))
 
     with st.sidebar:
-        st.header("Engagement paths")
-        state_path = Path(st.text_input("State path", str(state_path)))
-        artifact_dir = Path(st.text_input("Artifact directory", str(artifact_dir)))
-        input_dir = Path(st.text_input("Upload/input directory", str(input_dir)))
-        st.caption("Use `ingest-raw-inputs` after staging new uploads.")
+        st.header("Engagement")
+        st.caption("Use the main tabs for normal workflow. Technical paths are advanced settings.")
+        with st.expander("Advanced technical paths", expanded=False):
+            state_path = Path(st.text_input("State path", str(state_path)))
+            artifact_dir = Path(st.text_input("Artifact directory", str(artifact_dir)))
+            input_dir = Path(st.text_input("Upload/input directory", str(input_dir)))
+            st.caption("Use `ingest-raw-inputs` after staging new uploads.")
 
     workflow_steps = _workflow_steps(str(input_dir), str(artifact_dir), str(state_path))
     setup_tab, upload_tab, workflow_tab, source_review_tab, tb_tab, draft_tab, review_tab, artifacts_tab, final_tab, apply_tab = st.tabs([
@@ -556,7 +594,8 @@ def main() -> None:
                     st.write(str(path))
             else:
                 st.info("No files selected.")
-        st.code(f"PYTHONPATH=src python3.11 -m accountant_copilot.cli ingest-raw-inputs --input-dir {input_dir} --state {state_path}")
+        with st.expander("Technical intake command", expanded=False):
+            st.code(f"PYTHONPATH=src python3.11 -m accountant_copilot.cli ingest-raw-inputs --input-dir {input_dir} --state {state_path}")
 
     with workflow_tab:
         _render_workflow_orchestrator(workflow_steps, repo_root)
@@ -607,14 +646,18 @@ def main() -> None:
         if st.button("Stage filled workbench for apply") and filled is not None:
             target.write_bytes(filled.getbuffer())
             st.success(f"Staged {target}")
-        st.code(f"PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-accountant-review-workbench --state {state_path} --workbench {target} --artifact-dir {artifact_dir} --output {artifact_dir / 'applied_accountant_review_workbench.json'}")
+        with st.expander("Technical apply command", expanded=False):
+            st.code(f"PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-accountant-review-workbench --state {state_path} --workbench {target} --artifact-dir {artifact_dir} --output {artifact_dir / 'applied_accountant_review_workbench.json'}")
         if st.button("Run apply command"):
             result = _run_cli(["apply-accountant-review-workbench", "--state", str(state_path), "--workbench", str(target), "--artifact-dir", str(artifact_dir), "--output", str(artifact_dir / "applied_accountant_review_workbench.json")], repo_root)
-            st.write(f"Exit code: {result.returncode}")
-            if result.stdout:
-                st.code(result.stdout)
-            if result.stderr:
-                st.error(result.stderr)
+            status = "completed" if result.returncode == 0 else "needs attention"
+            st.write(f"Apply status: {status}")
+            with st.expander("Technical apply output", expanded=result.returncode != 0):
+                st.write(f"Exit code: {result.returncode}")
+                if result.stdout:
+                    st.code(result.stdout)
+                if result.stderr:
+                    st.error(result.stderr)
 
 
 if __name__ == "__main__":

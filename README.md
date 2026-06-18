@@ -542,10 +542,10 @@ The Streamlit app is the product-facing workflow shell:
 1. Set/open engagement details and review the status dashboard.
 2. Upload source documents.
 3. Run workflow steps: intake, inventory, fact extraction, matching, CoA/mapping prep, review packet, reviewed TB/draft statements, release candidate, final export.
-4. Review source extraction issues such as incomplete fields or wrong document-type candidates, and stage resolution actions.
+4. Review source extraction issues such as incomplete fields or wrong document-type candidates, stage resolution actions, and save them to `source_issue_resolutions.json` for audit/review.
 5. Review the post-journal trial balance and internal draft statements.
 6. Complete accountant review decisions with reviewer/rationale defaults, editable CoA review table, and deterministic apply controls.
-7. Review artifacts, release candidate, final manifest, and release blockers before final export.
+7. Review a clean final package preview — draft statements first, then release candidate/final manifests and supporting workpapers.
 
 ```bash
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \

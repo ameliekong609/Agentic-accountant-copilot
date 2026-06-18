@@ -131,8 +131,8 @@ def test_guided_workflow_commands_are_available_for_ui():
     assert all(step["command"] for step in steps)
 
 
-def test_source_resolution_payload_and_coa_table_rows_are_ui_friendly():
-    from accountant_copilot.review_app import _coa_review_rows, _source_resolution_payload
+def test_source_resolution_payload_and_coa_table_rows_are_ui_friendly(tmp_path: Path):
+    from accountant_copilot.review_app import _coa_review_rows, _save_source_resolution, _source_resolution_payload
 
     issue = {
         "layer": "invoice",
@@ -146,9 +146,29 @@ def test_source_resolution_payload_and_coa_table_rows_are_ui_friendly():
     assert payload["action"] == "mark_out_of_scope"
     assert payload["reviewer"] == "Amelie"
     assert payload["blocks_release"] is False
+    saved_path = _save_source_resolution(tmp_path, payload)
+    saved = json.loads(saved_path.read_text())
+    assert saved["resolutions"] == [payload]
 
     rows = _coa_review_rows({"sections": {"coa_accounts": [{"account_id": "a1", "code": "100", "name": "Cash"}]}})
     assert rows == [{"account_id": "a1", "code": "100", "name": "Cash", "action": "", "approved_by": "", "rationale": ""}]
+
+
+def test_final_package_preview_prioritizes_statement_and_manifest_artifacts(tmp_path: Path):
+    from accountant_copilot.review_app import _final_package_preview
+
+    (tmp_path / "draft_statements").mkdir()
+    (tmp_path / "release_candidate").mkdir()
+    (tmp_path / "draft_statements" / "draft_statements.md").write_text("# Draft statements")
+    (tmp_path / "release_candidate" / "release_candidate_manifest.json").write_text(json.dumps({"status": "ready"}))
+    (tmp_path / "final_release_manifest.json").write_text(json.dumps({"status": "signed"}))
+
+    preview = _final_package_preview(tmp_path)
+
+    assert preview[0]["label"] == "Draft financial statements"
+    assert preview[0]["kind"] == "statement"
+    assert preview[1]["label"] == "Release candidate manifest"
+    assert preview[2]["label"] == "Final release manifest"
 
 
 def test_serve_accountant_review_ui_command_is_registered():
