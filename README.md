@@ -531,6 +531,11 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-accountant-review-ui 
   --artifact-dir outputs \
   --output-dir outputs/accountant_review_ui
 
+PYTHONPATH=src python3.11 -m accountant_copilot.cli serve-accountant-review-ui \
+  --state outputs/raw_inputs_pdf_extraction/engagement_state.json \
+  --artifact-dir outputs/raw_inputs_pdf_extraction \
+  --input-dir inputs
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \
   --facts outputs/bank_statement_facts.json \
   --output outputs/bank_continuity.md

@@ -257,3 +257,5 @@ Review packets now include `journal_tb_impact.md`, summarising CoA status, linke
 `export-review-ui-bundle` writes a read-only JSON bundle for local review UI use, including the workbench, release blockers, key artifacts, and state summary. It never applies approvals.
 
 `export-accountant-review-ui` writes a local static HTML/JavaScript review workbench (`index.html`, `app.js`, and JSON bundle files) that lets an accountant fill CoA, journal, draft statement, and final sign-off decisions and download a filled workbench JSON. The UI has no network calls and does not mutate engagement state; approvals still go through `apply-accountant-review-workbench`.
+
+`serve-accountant-review-ui` starts the Streamlit review UI. It begins with source document upload/staging, then moves into release blockers, accountant review decisions, artifacts, and controlled apply. The UI is experiential and workflow-friendly, but approvals still run through the same deterministic apply command.

@@ -6,6 +6,7 @@ import csv
 import hashlib
 import html
 import json
+import os
 import re
 import subprocess
 import sys
@@ -3061,6 +3062,37 @@ def _export_accountant_review_ui_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _serve_accountant_review_ui_command(args: argparse.Namespace) -> int:
+    app_path = Path(__file__).with_name("review_app.py")
+    command = [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(app_path),
+        "--server.address",
+        args.host,
+        "--server.port",
+        str(args.port),
+        "--browser.gatherUsageStats",
+        "false",
+        "--",
+        "--state",
+        str(args.state),
+        "--artifact-dir",
+        str(args.artifact_dir),
+        "--input-dir",
+        str(args.input_dir),
+    ]
+    print(f"Starting Streamlit accountant review UI on http://{args.host}:{args.port}")
+    print(f"State: {args.state}")
+    print(f"Artifact directory: {args.artifact_dir}")
+    print(f"Input directory: {args.input_dir}")
+    env = os.environ.copy()
+    env.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
+    return subprocess.run(command, check=False, env=env, text=True, input="\n").returncode
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -5244,6 +5276,18 @@ def build_parser() -> argparse.ArgumentParser:
     accountant_review_ui_parser.add_argument("--artifact-dir", default="outputs")
     accountant_review_ui_parser.add_argument("--output-dir", required=True)
     accountant_review_ui_parser.set_defaults(func=_export_accountant_review_ui_command)
+
+    serve_accountant_review_ui_parser = subparsers.add_parser(
+        "serve-accountant-review-ui",
+        help="Start the Streamlit accountant review UI with source document upload first.",
+        description="Start the Streamlit accountant review UI with source document upload first.",
+    )
+    serve_accountant_review_ui_parser.add_argument("--state", default="outputs/raw_inputs_pdf_extraction/engagement_state.json")
+    serve_accountant_review_ui_parser.add_argument("--artifact-dir", default="outputs/raw_inputs_pdf_extraction")
+    serve_accountant_review_ui_parser.add_argument("--input-dir", default="inputs")
+    serve_accountant_review_ui_parser.add_argument("--host", default="127.0.0.1")
+    serve_accountant_review_ui_parser.add_argument("--port", default=8501, type=int)
+    serve_accountant_review_ui_parser.set_defaults(func=_serve_accountant_review_ui_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",
