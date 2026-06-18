@@ -255,3 +255,5 @@ Review packets now include `journal_tb_impact.md`, summarising CoA status, linke
 `explain-release-blockers` exports markdown/JSON blockers grouped by control layer: source evidence, CoA, journal, statement, release candidate, and final sign-off.
 
 `export-review-ui-bundle` writes a read-only JSON bundle for local review UI use, including the workbench, release blockers, key artifacts, and state summary. It never applies approvals.
+
+`export-accountant-review-ui` writes a local static HTML/JavaScript review workbench (`index.html`, `app.js`, and JSON bundle files) that lets an accountant fill CoA, journal, draft statement, and final sign-off decisions and download a filled workbench JSON. The UI has no network calls and does not mutate engagement state; approvals still go through `apply-accountant-review-workbench`.

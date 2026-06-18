@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import html
 import json
 import re
 import subprocess
@@ -2914,6 +2915,152 @@ def _export_review_ui_bundle_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _accountant_review_ui_html(entity_name: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Accountant Review Workbench — {html.escape(entity_name)}</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: #f6f7fb; color: #172033; }}
+    header {{ background: #10223f; color: white; padding: 24px 32px; }}
+    main {{ max-width: 1180px; margin: 0 auto; padding: 24px; }}
+    section {{ background: white; border: 1px solid #d9deea; border-radius: 14px; padding: 18px; margin: 16px 0; box-shadow: 0 1px 3px rgba(16,34,63,.06); }}
+    h1, h2 {{ margin-top: 0; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }}
+    .card {{ border: 1px solid #e3e7ef; border-radius: 10px; padding: 12px; background: #fbfcff; }}
+    label {{ display: block; font-size: 12px; font-weight: 700; margin-top: 8px; color: #46546b; }}
+    select, input, textarea {{ width: 100%; box-sizing: border-box; margin-top: 4px; padding: 8px; border: 1px solid #cbd3df; border-radius: 8px; }}
+    textarea {{ min-height: 60px; }}
+    button {{ background: #2456d6; color: white; border: 0; border-radius: 10px; padding: 10px 14px; font-weight: 700; cursor: pointer; }}
+    code {{ background: #eef2ff; padding: 2px 5px; border-radius: 5px; }}
+    .danger {{ color: #a43b3b; }}
+    .muted {{ color: #667085; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Accountant Review Workbench</h1>
+    <p>{html.escape(entity_name)} — local static review UI. This page edits a downloadable workbench JSON only; it does not mutate engagement state.</p>
+  </header>
+  <main>
+    <section>
+      <h2>How to use</h2>
+      <ol>
+        <li>Fill decisions below with reviewer and rationale.</li>
+        <li>Click <strong>Download filled workbench JSON</strong>.</li>
+        <li>Apply it with <code>PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-accountant-review-workbench --state ... --workbench accountant_review_workbench_filled.json --artifact-dir ... --output applied_accountant_review_workbench.json</code>.</li>
+      </ol>
+      <button onclick="downloadWorkbench()">Download filled workbench JSON</button>
+    </section>
+    <section><h2>Release Blockers</h2><div id="blockers"></div></section>
+    <section><h2>CoA Review</h2><div id="coa"></div></section>
+    <section><h2>Journal Review</h2><div id="journals"></div></section>
+    <section><h2>Draft Statement Review</h2><div id="draft"></div></section>
+    <section><h2>Final Sign-off</h2><div id="final"></div></section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
+"""
+
+
+def _accountant_review_ui_js() -> str:
+    return r"""
+const state = window.REVIEW_UI_DATA;
+const workbench = state.workbench;
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+}
+
+function setValue(path, value) {
+  let target = workbench;
+  for (let i = 0; i < path.length - 1; i++) target = target[path[i]];
+  target[path[path.length - 1]] = value;
+}
+
+function decisionControls(path, includeOffset=false) {
+  const pathText = JSON.stringify(path);
+  const offset = includeOffset ? `<label>Offset account ID<input onchange='setValue(${pathText}.concat(["offset_account_id"]), this.value)' /></label>` : '';
+  return `
+    <label>Action<select onchange='setValue(${pathText}.concat(["action"]), this.value)'><option value=""></option><option value="approve">approve</option><option value="reject">reject</option></select></label>
+    ${offset}
+    <label>Reviewer<input onchange='setValue(${pathText}.concat(["approved_by"]), this.value)' /></label>
+    <label>Rationale<textarea onchange='setValue(${pathText}.concat(["rationale"]), this.value)'></textarea></label>`;
+}
+
+function renderBlockers() {
+  const blockers = state.release_blockers.blockers || [];
+  document.getElementById('blockers').innerHTML = blockers.length ? blockers.map(b => `<div class="card"><strong class="danger">${escapeHtml(b.category)}</strong><p>${escapeHtml(b.message)}</p><p><strong>Required action:</strong> ${escapeHtml(b.required_action)}</p><p class="muted">${escapeHtml(b.artifact)}</p></div>`).join('') : '<p>No release blockers detected.</p>';
+}
+
+function renderCoa() {
+  const rows = workbench.sections.coa_accounts || [];
+  document.getElementById('coa').innerHTML = rows.length ? `<div class="grid">${rows.map((a, i) => `<div class="card"><strong>${escapeHtml(a.code)} ${escapeHtml(a.name)}</strong><p>${escapeHtml(a.type)} / ${escapeHtml(a.presentation_group)} / opening ${escapeHtml(a.opening_balance)}</p>${decisionControls(['sections','coa_accounts',i])}</div>`).join('')}</div>` : '<p>No CoA accounts pending review.</p>';
+}
+
+function renderJournals() {
+  const rows = workbench.sections.journal_decisions || [];
+  document.getElementById('journals').innerHTML = rows.length ? `<div class="grid">${rows.map((j, i) => `<div class="card"><strong>${escapeHtml(j.adjustment_id)}</strong><p>DR ${escapeHtml(j.debit_account)} / CR ${escapeHtml(j.credit_account)} / ${escapeHtml(j.amount)}</p>${decisionControls(['sections','journal_decisions',i], true)}</div>`).join('')}</div>` : '<p>No journals pending review.</p>';
+}
+
+function renderDraft() {
+  const d = workbench.sections.draft_statement_review;
+  document.getElementById('draft').innerHTML = `<div class="card"><p>Status: <strong>${escapeHtml(d.draft_status)}</strong></p><p>Findings: ${escapeHtml(d.draft_findings)}</p>${decisionControls(['sections','draft_statement_review','decision'])}</div>`;
+}
+
+function renderFinal() {
+  document.getElementById('final').innerHTML = `<div class="card"><p>Final sign-off should only be completed after release candidate verification.</p>${decisionControls(['sections','final_signoff'])}</div>`;
+}
+
+function downloadWorkbench() {
+  const blob = new Blob([JSON.stringify(workbench, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'accountant_review_workbench_filled.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+renderBlockers();
+renderCoa();
+renderJournals();
+renderDraft();
+renderFinal();
+"""
+
+
+def _export_accountant_review_ui_command(args: argparse.Namespace) -> int:
+    state = load_engagement_state(Path(args.state))
+    artifact_dir = Path(args.artifact_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    workbench = _build_accountant_review_workbench(state, artifact_dir)
+    blockers_payload = {"engagement_id": state.engagement_id, "entity_name": state.entity_name, "blockers": _collect_release_blockers(state, artifact_dir)}
+    artifacts = {}
+    for name, rel in {
+        "post_journal_trial_balance": "post_journal_trial_balance.json",
+        "statement_line_mapping": "statement_line_mapping.json",
+        "draft_statements": "draft_statements/draft_statements.json",
+    }.items():
+        path = artifact_dir / rel
+        artifacts[name] = json.loads(path.read_text()) if path.exists() else None
+    bundle = {"engagement_id": state.engagement_id, "entity_name": state.entity_name, "workbench": workbench, "release_blockers": blockers_payload, "artifacts": artifacts, "state_summary": inspect_engagement(state)}
+    (output_dir / "accountant_review_workbench.json").write_text(json.dumps(workbench, indent=2, sort_keys=True))
+    (output_dir / "review_ui_bundle.json").write_text(json.dumps(bundle, indent=2, sort_keys=True))
+    data_script = "window.REVIEW_UI_DATA = " + json.dumps(bundle, indent=2, sort_keys=True) + ";\n\n"
+    (output_dir / "app.js").write_text(data_script + _accountant_review_ui_js())
+    (output_dir / "index.html").write_text(_accountant_review_ui_html(state.entity_name))
+    (output_dir / "README.md").write_text(f"# Accountant Review UI — {state.entity_name}\n\nOpen `index.html` locally. The UI only downloads filled workbench JSON; apply it with `apply-accountant-review-workbench`.\n")
+    print(f"Exported accountant review UI → {output_dir / 'index.html'}")
+    return 0
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -3463,6 +3610,7 @@ def _format_journal_tb_impact(state: EngagementState, state_path: Path) -> str:
         ("Accountant review workbench", "accountant_review_workbench.md"),
         ("Release blockers", "release_blockers.md"),
         ("Review UI bundle", "review_ui_bundle/README.md"),
+        ("Accountant review UI", "accountant_review_ui/index.html"),
     ]
     lines.append("## Linked artifacts")
     found = False
@@ -5087,6 +5235,15 @@ def build_parser() -> argparse.ArgumentParser:
     review_ui_bundle_parser.add_argument("--artifact-dir", default="outputs")
     review_ui_bundle_parser.add_argument("--output-dir", required=True)
     review_ui_bundle_parser.set_defaults(func=_export_review_ui_bundle_command)
+
+    accountant_review_ui_parser = subparsers.add_parser(
+        "export-accountant-review-ui",
+        help="Export a local static accountant review UI for filling workbench decisions.",
+    )
+    accountant_review_ui_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    accountant_review_ui_parser.add_argument("--artifact-dir", default="outputs")
+    accountant_review_ui_parser.add_argument("--output-dir", required=True)
+    accountant_review_ui_parser.set_defaults(func=_export_accountant_review_ui_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",
