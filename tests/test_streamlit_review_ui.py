@@ -21,6 +21,8 @@ def run_cli(*args: str):
 
 
 def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
+    from accountant_copilot.review_app import _main_tab_labels
+
     assert APP.exists()
     source = APP.read_text()
     assert "st.file_uploader" in source
@@ -30,7 +32,9 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "apply-accountant-review-workbench" in source
     assert "accept_multiple_files=True" in source
     assert "Source Extraction Review" in source
-    assert "Run intake" in source
+    assert "Process documents and build inventory" in source
+    assert "Run intake" not in source
+    assert "Build document inventory" not in source
     assert "Extract accounting facts" in source
     assert "Build review packet" in source
     assert "Build release candidate" in source
@@ -46,11 +50,13 @@ def test_streamlit_review_app_starts_with_document_upload_and_control_tabs():
     assert "Resolve source issue" in source
     assert "Editable CoA review table" in source
     assert "Build reviewed TB and draft statements" in source
-    assert "2 Intake & inventory" in source
-    assert "3 Extract facts" in source
-    assert "4 Match & review sources" in source
-    assert "5 CoA & mappings" in source
-    assert "6 Trial balance & statements" in source
+    assert _main_tab_labels()[0] == "1 Upload source documents"
+    assert "0 Engagement setup" not in _main_tab_labels()
+    assert "2 Intake & inventory" in _main_tab_labels()
+    assert "3 Extract facts" in _main_tab_labels()
+    assert "4 Match & review sources" in _main_tab_labels()
+    assert "5 CoA & mappings" in _main_tab_labels()
+    assert "6 Trial balance & statements" in _main_tab_labels()
     assert "Document inventory review" in source
 
 
@@ -158,7 +164,7 @@ def test_guided_workflow_commands_are_available_for_ui():
     steps = _workflow_steps("inputs", "outputs/raw_inputs_pdf_extraction", "outputs/raw_inputs_pdf_extraction/engagement_state.json")
     labels = [step["label"] for step in steps]
 
-    assert labels[:4] == ["Run intake", "Build document inventory", "Extract accounting facts", "Match source facts"]
+    assert labels[:3] == ["Process documents and build inventory", "Extract accounting facts", "Match source facts"]
     assert "Build review packet" in labels
     assert "Build reviewed TB and draft statements" in labels
     assert "Build release candidate" in labels
@@ -221,8 +227,22 @@ def test_workflow_stage_groups_break_apart_the_sequence():
         "7 Accountant review",
         "8 Final package",
     ]
-    assert [step["label"] for step in groups[0]["steps"]] == ["Run intake", "Build document inventory"]
+    assert [step["label"] for step in groups[0]["steps"]] == ["Process documents and build inventory"]
     assert [step["label"] for step in groups[1]["steps"]] == ["Extract accounting facts"]
+
+
+def test_intake_and_inventory_are_one_product_action():
+    from accountant_copilot.review_app import _workflow_steps
+
+    steps = _workflow_steps("inputs", "outputs/raw_inputs_pdf_extraction", "outputs/raw_inputs_pdf_extraction/engagement_state.json")
+    by_label = {step["label"]: step for step in steps}
+
+    assert "Run intake" not in by_label
+    assert "Build document inventory" not in by_label
+    intake_inventory = by_label["Process documents and build inventory"]
+    assert intake_inventory["user_output"] == "Document inventory is ready for review."
+    assert intake_inventory["command"][0][0] == "ingest-raw-inputs"
+    assert intake_inventory["command"][1][0] == "export-document-inventory"
 
 
 def test_stage_step_button_keys_are_unique_across_tabs():
@@ -247,7 +267,7 @@ def test_workflow_steps_embed_outputs_and_review_actions():
     steps = _workflow_steps("inputs", "outputs/raw_inputs_pdf_extraction", "outputs/raw_inputs_pdf_extraction/engagement_state.json")
     by_label = {step["label"]: step for step in steps}
 
-    assert by_label["Run intake"]["user_output"] == "Documents are registered and ready for inventory."
+    assert by_label["Process documents and build inventory"]["user_output"] == "Document inventory is ready for review."
     assert by_label["Extract accounting facts"]["review_action"] == "Review source extraction issues now, before matching."
     assert by_label["Build CoA and mappings"]["review_action"] == "Review and approve CoA/mapping suggestions now."
     assert by_label["Build reviewed TB and draft statements"]["review_action"] == "Review the trial balance and draft statements now."
@@ -285,14 +305,31 @@ def test_workflow_result_summary_hides_raw_stdout_for_good_ux():
     from subprocess import CompletedProcess
     from accountant_copilot.review_app import _workflow_result_summary
 
-    step = {"label": "Run intake", "outputs": ["engagement_state.json", "document_inventory.md"]}
+    step = {"label": "Process documents and build inventory", "outputs": ["engagement_state.json", "document_inventory.md"]}
     result = CompletedProcess(args=["ingest-raw-inputs"], returncode=0, stdout="very long cli blob", stderr="")
 
     summary = _workflow_result_summary(step, [result], outputs_present=2, outputs_total=2)
 
     assert summary["status"] == "Done"
-    assert summary["message"] == "Run intake finished. 2 of 2 expected outputs are available."
+    assert summary["message"] == "Process documents and build inventory finished. 2 of 2 expected outputs are available."
     assert "cli" not in summary["message"].lower()
+    assert summary["show_technical_output"] is False
+
+
+def test_workflow_result_summary_treats_exported_review_findings_as_review_state():
+    from subprocess import CompletedProcess
+    from accountant_copilot.review_app import _workflow_result_summary
+
+    step = {"label": "Extract accounting facts", "outputs": ["bank_statement_facts.json", "invoice_facts.json"]}
+    results = [
+        CompletedProcess(args=["export-bank-statement-facts"], returncode=1, stdout="Exported bank statement facts JSON", stderr=""),
+        CompletedProcess(args=["export-invoice-facts"], returncode=1, stdout="Exported invoice facts JSON", stderr=""),
+    ]
+
+    summary = _workflow_result_summary(step, results, outputs_present=2, outputs_total=2)
+
+    assert summary["status"] == "Needs review"
+    assert summary["message"] == "Extract accounting facts finished with review items. Review the output in this stage before continuing."
     assert summary["show_technical_output"] is False
 
 

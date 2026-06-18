@@ -26,6 +26,21 @@ DEFAULT_ARTIFACT_DIR = Path("outputs/raw_inputs_pdf_extraction")
 DEFAULT_INPUT_DIR = Path("inputs")
 
 
+def _main_tab_labels() -> list[str]:
+    return [
+        "1 Upload source documents",
+        "2 Intake & inventory",
+        "3 Extract facts",
+        "4 Match & review sources",
+        "5 CoA & mappings",
+        "6 Trial balance & statements",
+        "7 Accountant review",
+        "8 Final package",
+        "9 Artifacts",
+        "10 Apply decisions",
+    ]
+
+
 def _app_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--state", default=str(DEFAULT_STATE))
@@ -111,20 +126,15 @@ def _run_cli(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
 def _workflow_steps(input_dir: str, artifact_dir: str, state_path: str) -> list[dict[str, Any]]:
     return [
         {
-            "label": "Run intake",
-            "description": "Register uploaded source documents and create evidence/extraction review records.",
-            "user_output": "Documents are registered and ready for inventory.",
-            "review_action": "No accountant review yet. Continue to document inventory.",
-            "command": ["ingest-raw-inputs", "--state", state_path, "--input-dir", input_dir],
-            "outputs": [state_path],
-        },
-        {
-            "label": "Build document inventory",
-            "description": "Summarize uploaded documents and page-level evidence for accountant review.",
+            "label": "Process documents and build inventory",
+            "description": "Register uploaded source documents, extract page-level evidence, and summarize the document inventory for accountant review.",
             "user_output": "Document inventory is ready for review.",
-            "review_action": "Skim the inventory now if document names/types look unexpected; otherwise continue to extraction.",
-            "command": ["export-document-inventory", "--state", state_path, "--output", f"{artifact_dir}/document_inventory.md"],
-            "outputs": [f"{artifact_dir}/document_inventory.md"],
+            "review_action": "Review the detected document list now. If document types/pages look right, continue to extraction.",
+            "command": [
+                ["ingest-raw-inputs", "--state", state_path, "--input-dir", input_dir],
+                ["export-document-inventory", "--state", state_path, "--output", f"{artifact_dir}/document_inventory.md"],
+            ],
+            "outputs": [state_path, f"{artifact_dir}/document_inventory.md"],
         },
         {
             "label": "Extract accounting facts",
@@ -254,7 +264,7 @@ def _run_step_command(command: Any, cwd: Path) -> list[subprocess.CompletedProce
 def _workflow_stage_groups(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_label = {step["label"]: step for step in steps}
     definitions = [
-        ("2 Intake & inventory", ["Run intake", "Build document inventory"]),
+        ("2 Intake & inventory", ["Process documents and build inventory"]),
         ("3 Extract facts", ["Extract accounting facts"]),
         ("4 Match & review sources", ["Match source facts"]),
         ("5 CoA & mappings", ["Build CoA and mappings"]),
@@ -283,6 +293,12 @@ def _workflow_output_readiness_text(label: str, outputs_present: int, outputs_to
 
 def _workflow_result_summary(step: dict[str, Any], results: list[subprocess.CompletedProcess[str]], outputs_present: int, outputs_total: int) -> dict[str, Any]:
     failures = [result for result in results if result.returncode != 0]
+    if failures and outputs_total and outputs_present >= outputs_total:
+        return {
+            "status": "Needs review",
+            "message": f"{step['label']} finished with review items. Review the output in this stage before continuing.",
+            "show_technical_output": False,
+        }
     if failures:
         return {
             "status": "Needs attention",
@@ -474,6 +490,9 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifa
                     st.success(summary["message"])
                     st.info(f"Output ready: {step.get('user_output', 'This step produced its expected outputs.')}")
                     st.warning(f"Review now: {step.get('review_action', 'Continue to the next step if no review is needed.')}")
+                elif summary["status"] == "Needs review":
+                    st.warning(summary["message"])
+                    st.info(f"Review now: {step.get('review_action', 'Review this step output before continuing.')}")
                 elif summary["status"] == "Check outputs":
                     st.warning(summary["message"])
                 else:
@@ -485,7 +504,7 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifa
                             st.code(result.stdout[-4000:])
                         if result.stderr:
                             st.error(result.stderr[-4000:])
-            if step["label"] == "Build document inventory":
+            if step["label"] == "Process documents and build inventory":
                 _render_document_inventory_review(artifact_dir)
 
 
@@ -680,28 +699,15 @@ def main() -> None:
             artifact_dir = Path(st.text_input("Artifact directory", str(artifact_dir)))
             input_dir = Path(st.text_input("Upload/input directory", str(input_dir)))
             st.caption("Use `ingest-raw-inputs` after staging new uploads.")
+        with st.expander("Engagement details", expanded=False):
+            _render_engagement_setup(artifact_dir, state_path, input_dir)
 
     workflow_steps = _workflow_steps(str(input_dir), str(artifact_dir), str(state_path))
     stage_groups = _workflow_stage_groups(workflow_steps)
-    setup_tab, upload_tab, intake_tab, extract_tab, match_tab, coa_tab, tb_tab, review_tab, final_tab, artifacts_tab, apply_tab = st.tabs([
-        "0 Engagement setup",
-        "1 Upload source documents",
-        "2 Intake & inventory",
-        "3 Extract facts",
-        "4 Match & review sources",
-        "5 CoA & mappings",
-        "6 Trial balance & statements",
-        "7 Accountant review",
-        "8 Final package",
-        "9 Artifacts",
-        "10 Apply decisions",
-    ])
-
-    with setup_tab:
-        _render_engagement_setup(artifact_dir, state_path, input_dir)
-        _render_status_dashboard(artifact_dir)
+    upload_tab, intake_tab, extract_tab, match_tab, coa_tab, tb_tab, review_tab, final_tab, artifacts_tab, apply_tab = st.tabs(_main_tab_labels())
 
     with upload_tab:
+        _render_status_dashboard(artifact_dir)
         st.header("Upload source documents")
         st.write("Upload PDFs, images, CSVs, spreadsheets, or other source files into the engagement input folder. This does not approve accounting treatment.")
         uploaded_files = st.file_uploader("Upload source documents", accept_multiple_files=True)
