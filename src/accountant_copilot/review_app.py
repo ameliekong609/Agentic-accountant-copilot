@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -264,6 +265,12 @@ def _workflow_stage_groups(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"title": title, "steps": [by_label[label] for label in labels if label in by_label]} for title, labels in definitions]
 
 
+def _workflow_step_button_key(stage_title: str, step_index: int, step: dict[str, Any]) -> str:
+    stage_slug = re.sub(r"[^a-z0-9]+", "_", stage_title.lower()).strip("_")
+    step_slug = re.sub(r"[^a-z0-9]+", "_", step["label"].lower()).strip("_")
+    return f"run_step_{stage_slug}_{step_index}_{step_slug}"
+
+
 def _workflow_result_summary(step: dict[str, Any], results: list[subprocess.CompletedProcess[str]], outputs_present: int, outputs_total: int) -> dict[str, Any]:
     failures = [result for result in results if result.returncode != 0]
     if failures:
@@ -444,7 +451,8 @@ def _render_workflow_orchestrator(steps: list[dict[str, Any]], cwd: Path, artifa
             st.caption(f"Outputs present: {complete_count}/{len(outputs)}")
             if step["label"] == "Build document inventory":
                 _render_document_inventory_review(artifact_dir)
-            if st.button(step["label"], key=f"run_step_{idx}"):
+            button_key = _workflow_step_button_key(title, idx, step)
+            if st.button(step["label"], key=button_key):
                 results = _run_step_command(step["command"], cwd)
                 refreshed_outputs = [Path(path) for path in step.get("outputs", [])]
                 refreshed_count = sum(path.exists() for path in refreshed_outputs)

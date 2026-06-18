@@ -225,6 +225,22 @@ def test_workflow_stage_groups_break_apart_the_sequence():
     assert [step["label"] for step in groups[1]["steps"]] == ["Extract accounting facts"]
 
 
+def test_stage_step_button_keys_are_unique_across_tabs():
+    from accountant_copilot.review_app import _workflow_stage_groups, _workflow_step_button_key, _workflow_steps
+
+    steps = _workflow_steps("inputs", "outputs/raw_inputs_pdf_extraction", "outputs/raw_inputs_pdf_extraction/engagement_state.json")
+    groups = _workflow_stage_groups(steps)
+
+    keys = [
+        _workflow_step_button_key(group["title"], idx, step)
+        for group in groups
+        for idx, step in enumerate(group["steps"], start=1)
+    ]
+
+    assert len(keys) == len(set(keys))
+    assert "run_step_1" not in keys
+
+
 def test_workflow_steps_embed_outputs_and_review_actions():
     from accountant_copilot.review_app import _workflow_steps
 
