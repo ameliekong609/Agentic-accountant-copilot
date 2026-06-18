@@ -431,6 +431,16 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli suggest-coa-mappings \
   --broker-trade-facts outputs/broker_trade_facts.json \
   --output outputs/coa_mapping_suggestions.md
 
+PYTHONPATH=src python3.11 -m accountant_copilot.cli export-coa-mapping-template \
+  --mappings outputs/coa_mapping_suggestions.json \
+  --output outputs/coa_mapping_decisions_template.json
+
+PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-coa-mapping-decisions \
+  --state outputs/engagement_state.json \
+  --mappings outputs/coa_mapping_suggestions.json \
+  --decisions outputs/coa_mapping_decisions_template.json \
+  --output outputs/applied_coa_mapping_decisions.json
+
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \
   --facts outputs/bank_statement_facts.json \
   --output outputs/bank_continuity.md

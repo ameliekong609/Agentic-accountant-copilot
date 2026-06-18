@@ -219,3 +219,5 @@ CSV source intake now validates required `date`, `description`, and `amount` col
 `suggest-coa-mappings` creates unapproved CoA mapping suggestions from extracted source facts using the imported/chart accounts in engagement state. Missing candidate accounts and all proposed mappings become accountant review findings; mappings are not relied on until approved.
 
 `import-coa-from-prior-statements` imports candidate CoA accounts from prior-year financial statement evidence when no trial balance CSV is available. Imported accounts remain `pending_review`, link back to evidence refs, and set CoA review status to pending.
+
+`export-coa-mapping-template` and `apply-coa-mapping-decisions` provide the accountant review round trip for source-fact-to-CoA mappings. Blank templates do not apply decisions; filled decisions require mapping IDs, action, reviewer, and rationale, and persist approved/rejected mapping decisions to engagement state.

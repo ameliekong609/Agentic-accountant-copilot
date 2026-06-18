@@ -1940,6 +1940,93 @@ def _suggest_coa_mappings_command(args: argparse.Namespace) -> int:
     return 0 if not payload["findings"] else 1
 
 
+def _mapping_id(item: dict) -> str:
+    existing = item.get("mapping_id")
+    if existing:
+        return str(existing)
+    return "map_" + hashlib.sha256(f"{item.get('source_evidence_id')}|{item.get('candidate_account_id')}|{item.get('source_fact_type')}".encode()).hexdigest()[:12]
+
+
+def _export_coa_mapping_template_command(args: argparse.Namespace) -> int:
+    mappings = json.loads(Path(args.mappings).read_text())
+    decisions = []
+    for item in mappings.get("suggestions", []):
+        decisions.append({
+            "mapping_id": _mapping_id(item),
+            "source_fact_type": item.get("source_fact_type"),
+            "source_evidence_id": item.get("source_evidence_id"),
+            "candidate_account_id": item.get("candidate_account_id"),
+            "candidate_account_code": item.get("candidate_account_code"),
+            "candidate_account_name": item.get("candidate_account_name"),
+            "amount": item.get("amount"),
+            "action": "",
+            "approved_by": "",
+            "rationale": "",
+        })
+    payload = {"engagement_id": mappings.get("engagement_id"), "mapping_decisions": decisions}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Exported CoA mapping decision template → {output}")
+    return 0
+
+
+def _validate_mapping_decision(item: dict) -> tuple[str, str, str, str]:
+    mapping_id = item.get("mapping_id")
+    action = item.get("action")
+    rationale = item.get("rationale")
+    approved_by = item.get("approved_by")
+    if not mapping_id:
+        _usage_error("mapping decision missing mapping_id")
+    if action not in {"approve", "reject"}:
+        _usage_error(f"invalid mapping action for {mapping_id}: {action}")
+    if not rationale:
+        _usage_error(f"mapping decision for {mapping_id} requires rationale")
+    if not approved_by:
+        _usage_error(f"mapping decision for {mapping_id} requires approved_by")
+    return str(mapping_id), str(action), str(rationale), str(approved_by)
+
+
+def _apply_coa_mapping_decisions_command(args: argparse.Namespace) -> int:
+    state_path = Path(args.state)
+    state = load_engagement_state(state_path)
+    mappings = json.loads(Path(args.mappings).read_text())
+    decisions_payload = json.loads(Path(args.decisions).read_text())
+    mapping_by_id = {_mapping_id(item): item for item in mappings.get("suggestions", [])}
+    parsed = [_validate_mapping_decision(item) for item in decisions_payload.get("mapping_decisions", []) if item.get("action")]
+    for mapping_id, _action, _rationale, _approved_by in parsed:
+        if mapping_id not in mapping_by_id:
+            _usage_error(f"Unknown mapping_id: {mapping_id}")
+    applied_rows = []
+    approved = 0
+    rejected = 0
+    for mapping_id, action, rationale, approved_by in parsed:
+        mapping = mapping_by_id[mapping_id]
+        selected = "approve_coa_mapping" if action == "approve" else "reject_coa_mapping"
+        if action == "approve":
+            approved += 1
+        else:
+            rejected += 1
+        decision = AccountantDecision(
+            decision_id=f"decision_{selected}_{len(state.decisions) + 1:04d}",
+            question=f"{selected} {mapping_id}?",
+            selected_option=selected,
+            rationale=rationale,
+            status=DecisionStatus.APPROVED,
+            approved_by=approved_by,
+            evidence_refs=[ref for ref in mapping.get("evidence_refs", []) if ref],
+        )
+        state.decisions.append(decision)
+        applied_rows.append({"mapping_id": mapping_id, "action": action, "decision_id": decision.decision_id, "source_fact_type": mapping.get("source_fact_type"), "candidate_account_id": mapping.get("candidate_account_id")})
+    save_engagement_state(state_path, state)
+    payload = {"engagement_id": state.engagement_id, "applied_mappings": applied_rows, "summary": {"approved": approved, "rejected": rejected, "applied": len(applied_rows)}}
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"Applied {len(applied_rows)} CoA mapping decisions → {output}")
+    return 0
+
+
 def _parse_bank_statement_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -3859,6 +3946,24 @@ def build_parser() -> argparse.ArgumentParser:
     coa_mapping_parser.add_argument("--broker-trade-facts", default=None)
     coa_mapping_parser.add_argument("--output", default="outputs/coa_mapping_suggestions.md")
     coa_mapping_parser.set_defaults(func=_suggest_coa_mappings_command)
+
+    coa_mapping_template_parser = subparsers.add_parser(
+        "export-coa-mapping-template",
+        help="Export a JSON decision template for CoA mapping suggestions.",
+    )
+    coa_mapping_template_parser.add_argument("--mappings", required=True)
+    coa_mapping_template_parser.add_argument("--output", required=True)
+    coa_mapping_template_parser.set_defaults(func=_export_coa_mapping_template_command)
+
+    coa_mapping_apply_parser = subparsers.add_parser(
+        "apply-coa-mapping-decisions",
+        help="Apply accountant decisions for CoA mapping suggestions.",
+    )
+    coa_mapping_apply_parser.add_argument("--state", default=str(DEFAULT_STATE_PATH))
+    coa_mapping_apply_parser.add_argument("--mappings", required=True)
+    coa_mapping_apply_parser.add_argument("--decisions", required=True)
+    coa_mapping_apply_parser.add_argument("--output", required=True)
+    coa_mapping_apply_parser.set_defaults(func=_apply_coa_mapping_decisions_command)
 
     bank_continuity_parser = subparsers.add_parser(
         "export-bank-continuity",
