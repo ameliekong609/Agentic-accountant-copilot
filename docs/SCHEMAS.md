@@ -223,3 +223,5 @@ CSV source intake now validates required `date`, `description`, and `amount` col
 `export-coa-mapping-template` and `apply-coa-mapping-decisions` provide the accountant review round trip for source-fact-to-CoA mappings. Blank templates do not apply decisions; filled decisions require mapping IDs, action, reviewer, and rationale, and persist approved/rejected mapping decisions to engagement state.
 
 `propose-journals` creates pending-review journal proposals only from approved CoA mapping decisions. Each proposal is evidence-linked, uses a `pending_review_offset` side where the accounting treatment still needs review, and starts with `approved=0`; missing accounts become findings instead of forced journals.
+
+Review packets now include `journal_tb_impact.md`, summarising CoA status, linked CoA/mapping/journal artifacts, pending/approved accounts, pending journal proposals, and the accountant review requirements before TB/final-statement reliance.

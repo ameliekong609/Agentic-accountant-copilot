@@ -2623,6 +2623,56 @@ def _format_source_fact_layers(state_path: Path) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _format_journal_tb_impact(state: EngagementState, state_path: Path) -> str:
+    base_dir = state_path.parent
+    lines = [f"# Journal / TB Impact Review — {state.entity_name}", ""]
+    lines.extend([
+        "## Control status",
+        f"- CoA review status: {state.coa_review_status}",
+        f"- Adjustment review status: {state.adjustment_review_status}",
+        f"- CoA accounts: {len(state.chart_accounts)}",
+        f"- Journal/adjustment proposals: {len(state.adjustment_proposals)}",
+        "- Approved automatically: 0",
+        "",
+    ])
+    linked_artifacts = [
+        ("Prior statement CoA import", "prior_statement_coa_import.md"),
+        ("CoA mapping suggestions", "coa_mapping_suggestions.md"),
+        ("CoA mapping decision template", "coa_mapping_decisions_template.json"),
+        ("Applied CoA mapping decisions", "applied_coa_mapping_decisions.json"),
+        ("Journal proposals", "journal_proposals.md"),
+    ]
+    lines.append("## Linked artifacts")
+    found = False
+    for title, filename in linked_artifacts:
+        path = base_dir / filename
+        if path.exists():
+            found = True
+            lines.append(f"- {title}: `{path}`")
+    if not found:
+        lines.append("- No journal/TB layer artifacts found next to the engagement state.")
+    lines.extend(["", "## CoA accounts pending/approved"])
+    if state.chart_accounts:
+        for account in sorted(state.chart_accounts, key=lambda item: item.account_id):
+            lines.append(f"- {account.account_id} [{account.status}] {account.code} {account.name} — {account.type}/{account.presentation_group} opening={account.opening_balance}")
+    else:
+        lines.append("- No CoA accounts recorded.")
+    lines.extend(["", "## Journal proposals"])
+    if state.adjustment_proposals:
+        for proposal in sorted(state.adjustment_proposals, key=lambda item: item.adjustment_id):
+            lines.extend([
+                f"- {proposal.adjustment_id} [{proposal.status}] {proposal.description}",
+                f"  - Date: {proposal.date}",
+                f"  - DR {proposal.debit_account} / CR {proposal.credit_account}",
+                f"  - Amount: {proposal.amount}",
+                f"  - Evidence: {', '.join(proposal.source_evidence_refs)}",
+            ])
+    else:
+        lines.append("- No journal proposals recorded.")
+    lines.extend(["", "## Accountant review required", "- Approve or reject each CoA account and journal proposal before TB/final statement reliance.", "- Resolve any `pending_review_offset` side before final journal posting."])
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _export_review_packet_command(args: argparse.Namespace) -> int:
     state_path = Path(args.state)
     state = load_engagement_state(state_path)
@@ -2637,6 +2687,7 @@ def _export_review_packet_command(args: argparse.Namespace) -> int:
         "- Confirm CoA approval where required.",
         "- Review adjustment/journal items before final sign-off.",
         "- Review source fact layers in `source_fact_layers.md` for bank, invoice, distribution/tax, broker, and source-to-bank matching controls.",
+        "- Review journal/TB impact in `journal_tb_impact.md` before relying on proposed journals or account mappings.",
         "",
         f"Readiness: {payload['readiness_summary']}",
     ]) + "\n"
@@ -2645,6 +2696,7 @@ def _export_review_packet_command(args: argparse.Namespace) -> int:
     (output_dir / "document_summary.md").write_text(format_documents(state))
     (output_dir / "evidence_summary.md").write_text(_format_evidence_summary(state))
     (output_dir / "source_fact_layers.md").write_text(_format_source_fact_layers(state_path))
+    (output_dir / "journal_tb_impact.md").write_text(_format_journal_tb_impact(state, state_path))
     (output_dir / "preference_recommendations.md").write_text("Recommended preferences\n\n" + "\n".join(f"- {p.preference_id}: {p.rule}" for p in _recommended_preferences(state)) + "\n")
     template = {
         "engagement_id": state.engagement_id,
