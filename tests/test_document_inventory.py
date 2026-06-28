@@ -40,6 +40,12 @@ def test_export_document_inventory_groups_page_evidence_with_dates_amounts_and_t
             period_start="2024-07-01",
             period_end="2025-06-30",
             source_hash="abc123",
+            original_file_name="eStatement.pdf",
+            display_name="2025-06-30 - Westpac Bank Statement - Account 027.pdf",
+            naming_confidence="high",
+            naming_status="suggested",
+            naming_method="deterministic",
+            naming_evidence_refs=["ev_page_1"],
         )
     )
     state.evidence.append(
@@ -63,6 +69,10 @@ def test_export_document_inventory_groups_page_evidence_with_dates_amounts_and_t
     text = output.read_text()
     assert "# Document Inventory" in text
     assert "inputs/eStatement.pdf" in text
+    assert "2025-06-30 - Westpac Bank Statement - Account 027.pdf" in text
+    assert "Display name: 2025-06-30 - Westpac Bank Statement - Account 027.pdf" in text
+    assert "Suggested name" not in text
+    assert "Naming status: suggested" in text
     assert "bank_statement" in text
     assert "Page 1" in text
     assert "30/06/2025" in text
@@ -71,5 +81,7 @@ def test_export_document_inventory_groups_page_evidence_with_dates_amounts_and_t
     assert "interest" in text
     payload = json.loads((tmp_path / "document_inventory.json").read_text())
     assert payload["documents"][0]["evidence_count"] == 1
+    assert payload["documents"][0]["display_name"] == "2025-06-30 - Westpac Bank Statement - Account 027.pdf"
+    assert payload["documents"][0]["naming_method"] == "deterministic"
     assert payload["documents"][0]["pages"][0]["amounts"] == ["$1,234.56"]
     assert "interest" in payload["documents"][0]["tags"]

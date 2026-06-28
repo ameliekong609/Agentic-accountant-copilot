@@ -18,6 +18,12 @@ class SourceDocument(JsonModelMixin):
     source_hash: str
     status: str = "recorded"
     notes: str | None = None
+    original_file_name: str | None = None
+    display_name: str | None = None
+    naming_confidence: str | None = None
+    naming_status: str = "not_suggested"
+    naming_method: str | None = None
+    naming_evidence_refs: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SourceDocument":
@@ -31,6 +37,12 @@ class SourceDocument(JsonModelMixin):
             source_hash=data["source_hash"],
             status=data.get("status", "recorded"),
             notes=data.get("notes"),
+            original_file_name=data.get("original_file_name"),
+            display_name=data.get("display_name") or data.get("suggested_name"),
+            naming_confidence=data.get("naming_confidence"),
+            naming_status=data.get("naming_status", "not_suggested"),
+            naming_method=data.get("naming_method"),
+            naming_evidence_refs=list(data.get("naming_evidence_refs", [])),
         )
 
 

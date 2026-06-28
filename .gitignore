@@ -12,9 +12,15 @@ venv/
 
 # Outputs and client data
 outputs/
+tmp/
 inputs/
 *.xlsx
 *.pdf
+
+# Frontend
+web/lineage-ui/node_modules/
+web/lineage-ui/dist/
+web/lineage-ui/tsconfig.tsbuildinfo
 
 # macOS
 .DS_Store

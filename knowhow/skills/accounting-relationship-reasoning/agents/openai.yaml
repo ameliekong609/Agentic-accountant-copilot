@@ -1,0 +1,3 @@
+interface:
+  display_name: "Accounting Relationship Reasoning"
+  short_description: "Explain accounting movements before posting"

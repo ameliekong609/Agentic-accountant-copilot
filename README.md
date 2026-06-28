@@ -100,6 +100,20 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli record-evidence \
   --quote "Source quote text"
 ```
 
+For the current upload workflow, use `process-documents` after upload. It is the single Codex path for display names, document type classification, accounting facts, per-document JSON, and cache reuse:
+
+```bash
+PYTHONPATH=src python3.11 -m accountant_copilot.cli process-documents \
+  --input-dir inputs \
+  --artifact-dir outputs/raw_inputs_pdf_extraction \
+  --codex-command "codex exec" \
+  --codex-timeout 120 \
+  --codex-max-attempts 3 \
+  --batch-size 5
+```
+
+The processing metadata is written to `per_document/raw_XXX.json`, `document_inventory.json`, `accounting_facts_by_document.json`, and `source_coverage_continuity.json`. Bank statement names include the detected bank and account when supported by content, for example `2025-01-31 - Commonwealth Bank Statement - Account 027.pdf`. Source files are not physically renamed by this step.
+
 Rebuild the local Turing financial statement automation review workspace from raw `inputs/`:
 
 ```bash
@@ -418,33 +432,19 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-broker-trade-review \
   --output outputs/broker_trade_review.md
 
 PYTHONPATH=src python3.11 -m accountant_copilot.cli match-source-facts \
-  --bank-transactions outputs/bank_transactions.json \
-  --invoice-facts outputs/invoice_facts.json \
-  --distribution-tax-facts outputs/distribution_tax_facts.json \
-  --broker-trade-facts outputs/broker_trade_facts.json \
+  --accounting-facts outputs/accounting_facts_by_document.json \
+  --source-coverage outputs/source_coverage_continuity.json \
+  --codex-command "codex exec" \
+  --codex-timeout 120 \
+  --codex-max-attempts 3 \
   --output outputs/source_fact_matches.md
 
-PYTHONPATH=src python3.11 -m accountant_copilot.cli suggest-coa-mappings \
-  --state outputs/engagement_state.json \
-  --invoice-facts outputs/invoice_facts.json \
-  --distribution-tax-facts outputs/distribution_tax_facts.json \
-  --broker-trade-facts outputs/broker_trade_facts.json \
-  --output outputs/coa_mapping_suggestions.md
-
-PYTHONPATH=src python3.11 -m accountant_copilot.cli export-coa-mapping-template \
-  --mappings outputs/coa_mapping_suggestions.json \
-  --output outputs/coa_mapping_decisions_template.json
-
-PYTHONPATH=src python3.11 -m accountant_copilot.cli apply-coa-mapping-decisions \
-  --state outputs/engagement_state.json \
-  --mappings outputs/coa_mapping_suggestions.json \
-  --decisions outputs/coa_mapping_decisions_template.json \
-  --output outputs/applied_coa_mapping_decisions.json
-
-PYTHONPATH=src python3.11 -m accountant_copilot.cli propose-journals \
-  --state outputs/engagement_state.json \
-  --applied-mappings outputs/applied_coa_mapping_decisions.json \
-  --output outputs/journal_proposals.md
+PYTHONPATH=src python3.11 -m accountant_copilot.cli build-coa-mapping-workpaper \
+  --artifact-dir outputs/raw_inputs_pdf_extraction \
+  --output-dir outputs/step4_coa_mapping_workpaper \
+  --codex-command "codex exec" \
+  --codex-timeout 600 \
+  --codex-max-attempts 3
 
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-journal-decision-template \
   --state outputs/engagement_state.json \
@@ -531,21 +531,27 @@ PYTHONPATH=src python3.11 -m accountant_copilot.cli export-accountant-review-ui 
   --artifact-dir outputs \
   --output-dir outputs/accountant_review_ui
 
-PYTHONPATH=src python3.11 -m accountant_copilot.cli serve-accountant-review-ui \
-  --state outputs/raw_inputs_pdf_extraction/engagement_state.json \
-  --artifact-dir outputs/raw_inputs_pdf_extraction \
-  --input-dir inputs
+PYTHONPATH=src python3.11 -m accountant_copilot.cli serve-workpaper-portal \
+  --host 127.0.0.1 \
+  --port 8787
 ```
 
-The Streamlit app is the product-facing workflow shell:
+The workpaper portal is the accountant-facing local browser shell:
 
-1. Set/open engagement details and review the status dashboard.
-2. Upload source documents.
-3. Follow the stage tabs instead of one giant workflow runner: **2 Intake & inventory**, **3 Extract facts**, **4 Match & review sources**, **5 CoA & mappings**, **6 Trial balance & statements**, **7 Accountant review**, and **8 Final package**. Each stage owns its run button, output, and review area.
-4. Review source extraction issues such as incomplete fields or wrong document-type candidates, stage resolution actions, and save them to `source_issue_resolutions.json` for audit/review.
-5. Review the post-journal trial balance and internal draft statements.
-6. Complete accountant review decisions with reviewer/rationale defaults, editable CoA review table, and deterministic apply controls.
-7. Review a clean final package preview — draft statements first, then release candidate/final manifests and supporting workpapers.
+1. Upload a client zip/folder, point to a local client folder, or reuse the repo `inputs` folder.
+2. Confirm the target financial year and the single prior-year financial statement when needed.
+3. Start the background workpaper run. The portal calls `prepare-workpaper` with Codex CLI, bounded retries, Step 3 relationship reasoning, Step 4 TB bridge generation, and Turing senior review.
+4. Source indexing reads text PDFs, password-protected PDFs where the filename contains the password, PNG/JPG OCR when local Tesseract is available, CSV/TXT/JSON/Markdown, and modern DOCX/XLSX/XLSM text. Legacy binary DOC/XLS files should be converted to PDF/DOCX/XLSX before upload.
+5. Watch status for source indexing, relationship reasoning, TB bridge workbook creation, and Turing review.
+6. Download the Excel workbook and summary when complete.
+7. Keep the portal local for first trials. To share inside the team, run it on Amelie's laptop and expose the URL only through a trusted local network, Tailscale, or a tunnel.
+
+The background runner also starts an engineering watcher by default. It checks the same progress checkpoints every five minutes, diagnoses failed or stale jobs, and writes a Markdown diagnosis into the job folder. It only changes product code when explicitly enabled:
+
+- `ACCOUNTANT_COPILOT_ENGINEER_WATCHER=0` disables the watcher.
+- `ACCOUNTANT_COPILOT_ENGINEER_AUTOFIX=1` lets the watcher patch product code for failed jobs and run focused verification.
+- `ACCOUNTANT_COPILOT_ENGINEER_AUTOFIX_STALE=1` also allows patching while a job is stale but still running.
+- `ACCOUNTANT_COPILOT_ENGINEER_STALE_SECONDS=900` controls when a running job is considered stale.
 
 ```bash
 PYTHONPATH=src python3.11 -m accountant_copilot.cli export-bank-continuity \

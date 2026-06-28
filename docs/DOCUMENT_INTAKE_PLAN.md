@@ -60,14 +60,17 @@
    - explicitly sets `approved=false`; no realised gain/loss or investment treatment is auto-approved
 
 11. `match-source-facts`
-   - matches extracted invoice, distribution/tax, and broker facts to bank transaction evidence by exact amount/date
-   - leaves proposed matches unapproved for accountant review
-   - reports ambiguous or missing bank matches as findings instead of forcing a link
+   - uses Codex CLI to build the Step 3 Accounting Event Register
+   - explains source + bank, bank-only, source-only, excluded, and judgement events
+   - does not output CoA mappings, journals, or draft trial balance postings
 
-12. `suggest-coa-mappings`
-   - suggests source-fact to CoA mappings using imported/chart accounts in engagement state
-   - leaves all mapping suggestions unapproved for accountant review
-   - reports missing candidate accounts or mapping review needs as findings instead of relying on guessed mappings
+12. `build-coa-mapping-workpaper`
+   - uses Codex CLI as the Step 4 workpaper accountant: it creates draft CoA accounts and Draft TB Bridge movements from Step 3 events and one explicit prior-year FS document
+   - uses prior-year FS balances and accountant presentation rows as the Starting point
+   - writes a junior-accountant Excel workpaper with Summary, Draft CoA, Draft TB Bridge, Ready Events, Needs Judgement, Excluded, and Evidence Index sheets
+   - classifies accounts into adaptive FS presentation areas such as Cash and Cash Equivalents, Receivables / Sundry Debtors, Investments, Other Financial Assets, Payables and Accruals, Beneficiary Accounts, Borrowings / Loans, Equity, income, expenses, or clearing
+   - creates dynamic accountant-style bridge columns from evidence instead of static buckets; each movement column should normally net to zero
+   - does not use the removed CoA mapping approval-template flow
 
 13. `export-bank-continuity`
    - compares sequential bank statement closing balances to next opening balances

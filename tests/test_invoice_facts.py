@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from accountant_copilot.cli import _build_invoice_facts_payload
 from accountant_copilot.state.artifacts import SourceDocument
 from accountant_copilot.state.engagement import EngagementState
 from accountant_copilot.state.evidence import EvidenceRef
@@ -82,6 +83,132 @@ def test_export_invoice_facts_extracts_ocr_invoice_with_evidence(tmp_path: Path)
     assert fact["amount_due"] == "1,100.00"
     assert fact["evidence_id"] == "raw_026_page_001"
     assert fact["confidence"] == "image_ocr"
+    progress = json.loads((tmp_path / "invoice_facts.progress.json").read_text())
+    partial = json.loads((tmp_path / "invoice_facts.partial.json").read_text())
+    assert progress["status"] == "complete"
+    assert progress["processed_items"] == 1
+    assert progress["total_items"] == 1
+    assert partial["progress"]["facts_extracted"] == 1
+
+
+def test_invoice_facts_can_use_anthropic_structured_extraction(monkeypatch):
+    state = EngagementState(
+        engagement_id="invoice_api_test",
+        entity_name="Invoice Trust",
+        entity_type="trust",
+        fy_start="2024-07-01",
+        fy_end="2025-06-30",
+    )
+    state.source_documents.append(
+        SourceDocument(
+            document_id="doc_invoice",
+            file_path="inputs/loose_invoice.pdf",
+            document_type="image_support",
+            entity="Invoice Trust",
+            period_start="2024-07-01",
+            period_end="2025-06-30",
+            source_hash="abc123",
+        )
+    )
+    state.evidence.append(
+        EvidenceRef(
+            evidence_id="raw_001_page_001",
+            source_type="image_support",
+            file_path="inputs/loose_invoice.pdf",
+            document_id="doc_invoice",
+            page="1",
+            quote="TAX INVOICE Supplier: Example Pty Ltd Invoice ABC-77 Amount Due 2,420.00",
+            confidence="text_pdf",
+        )
+    )
+    monkeypatch.setenv(
+        "ACCOUNTANT_COPILOT_FAKE_ANTHROPIC_FACT_JSON",
+        json.dumps(
+            {
+                "extracted": True,
+                "fact_type": "invoice",
+                "fields": {
+                    "invoice_number": "ABC-77",
+                    "invoice_date": "not shown",
+                    "due_date": "not shown",
+                    "supplier": "Example Pty Ltd",
+                    "description": "Invoice from source evidence",
+                    "amount_due": "2,420.00",
+                },
+                "confidence": "medium",
+                "reason": "Structured extraction from loose invoice text.",
+            }
+        ),
+    )
+
+    payload = _build_invoice_facts_payload(state, use_ai_extraction=True, ai_provider="anthropic")
+
+    assert payload["summary"]["facts_extracted"] == 1
+    fact = payload["facts"][0]
+    assert fact["invoice_number"] == "ABC-77"
+    assert fact["supplier"] == "Example Pty Ltd"
+    assert fact["amount_due"] == "2,420.00"
+    assert fact["extraction_method"] == "ai"
+    assert fact["ai_provider"] == "anthropic"
+
+
+def test_invoice_facts_reuse_successful_ai_cache(monkeypatch, tmp_path: Path):
+    state = EngagementState(
+        engagement_id="invoice_cache_test",
+        entity_name="Invoice Trust",
+        entity_type="trust",
+        fy_start="2024-07-01",
+        fy_end="2025-06-30",
+    )
+    state.source_documents.append(
+        SourceDocument(
+            document_id="doc_invoice",
+            file_path="inputs/invoice.pdf",
+            document_type="image_support",
+            entity="Invoice Trust",
+            period_start="2024-07-01",
+            period_end="2025-06-30",
+            source_hash="invoice-hash",
+        )
+    )
+    state.evidence.append(
+        EvidenceRef(
+            evidence_id="ev_invoice",
+            source_type="image_support",
+            file_path="inputs/invoice.pdf",
+            document_id="doc_invoice",
+            page="1",
+            quote="TAX INVOICE Supplier: Cache Pty Ltd Invoice CACHE-1 Amount Due 9,900.00",
+            confidence="text_pdf",
+        )
+    )
+    monkeypatch.setenv(
+        "ACCOUNTANT_COPILOT_FAKE_ANTHROPIC_FACT_JSON",
+        json.dumps(
+            {
+                "extracted": True,
+                "fact_type": "invoice",
+                "fields": {
+                    "invoice_number": "CACHE-1",
+                    "invoice_date": "not shown",
+                    "due_date": "not shown",
+                    "supplier": "Cache Pty Ltd",
+                    "description": "Cached invoice",
+                    "amount_due": "9,900.00",
+                },
+                "confidence": "medium",
+            }
+        ),
+    )
+    cache_dir = tmp_path / ".ai_cache"
+
+    first = _build_invoice_facts_payload(state, use_ai_extraction=True, ai_provider="anthropic", cache_dir=cache_dir)
+    monkeypatch.delenv("ACCOUNTANT_COPILOT_FAKE_ANTHROPIC_FACT_JSON")
+    second = _build_invoice_facts_payload(state, use_ai_extraction=True, ai_provider="anthropic", cache_dir=cache_dir)
+
+    assert first["facts"][0]["invoice_number"] == "CACHE-1"
+    assert second["facts"][0]["invoice_number"] == "CACHE-1"
+    assert list(cache_dir.glob("*.json"))
 
 
 def test_export_invoice_facts_ignores_non_invoice_documents(tmp_path: Path):

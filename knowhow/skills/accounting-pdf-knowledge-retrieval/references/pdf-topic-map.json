@@ -1,0 +1,210 @@
+{
+  "map_version": "accounting_pdf_topic_map_v1",
+  "source_of_truth_rule": "This map points to accounting guidance in local PDFs. The PDFs guide judgement only. Client files, prior-year FS, bank statements, and extracted client evidence remain the source of truth for workpaper amounts and conclusions.",
+  "documents": {
+    "FIN121": {
+      "title": "Financial Accounting & Reporting Candidate Study Guide",
+      "path": "knowhow/fin121_csg.pdf",
+      "primary_use": "Financial reporting, recognition, measurement, presentation, and FS preparation guidance."
+    },
+    "MAAF121": {
+      "title": "Management Accounting & Applied Finance Candidate Study Guide",
+      "path": "knowhow/maaf121_csg.pdf",
+      "primary_use": "Management accounting, finance, valuation, working capital, funding, and risk guidance."
+    }
+  },
+  "topics": [
+    {
+      "topic_id": "foreign_currency_fx",
+      "label": "Foreign currency and FX",
+      "use_when": "Client pack has USD/foreign currency bank accounts, foreign invoices, foreign investments, FX gain/loss, functional currency, presentation currency, overseas operations, or hedging.",
+      "triggers": ["foreign currency", "foreign exchange", "FX", "USD", "EUR", "GBP", "functional currency", "presentation currency", "exchange difference", "closing rate", "translation", "retranslation"],
+      "sections": [
+        {
+          "document": "FIN121",
+          "section": "Unit 5: Foreign exchange",
+          "pdf_pages": [185, 205],
+          "search_terms": ["foreign currency transactions", "functional currency", "presentation currency", "monetary items", "closing rate", "exchange differences", "translation of financial statements"]
+        },
+        {
+          "document": "MAAF121",
+          "section": "Exchange rate risk management",
+          "pdf_pages": [126, 129],
+          "search_terms": ["exchange rate risk", "transaction exposure", "translation exposure", "forward exchange contract", "spot rate", "forward rate"]
+        }
+      ]
+    },
+    {
+      "topic_id": "revenue_receivables_cutoff",
+      "label": "Revenue, receivables, deferred income, and cut-off",
+      "use_when": "Client has sales invoices, customer receipts, debtor balances, revenue received in advance, WIP, or period cut-off questions.",
+      "triggers": ["revenue", "sales", "receivable", "debtor", "deferred income", "unearned income", "contract", "customer", "cut-off", "WIP", "work in progress"],
+      "sections": [
+        {
+          "document": "FIN121",
+          "section": "Revenue recognition / IFRS 15 areas",
+          "pdf_pages": [109, 128],
+          "search_terms": ["IFRS 15", "revenue recognition", "contract with a customer", "performance obligation", "transaction price", "revenue received in advance"]
+        }
+      ]
+    },
+    {
+      "topic_id": "income_tax_deferred_tax",
+      "label": "Income tax, deferred tax, and tax/book boundary",
+      "use_when": "Client pack has income tax payable/receivable, deferred tax, tax expense, tax losses, franking credits, withholding, offsets, or tax-only components that may not be book movements.",
+      "triggers": ["income tax", "deferred tax", "current tax", "tax payable", "tax receivable", "tax base", "franking credit", "withholding", "tax offset", "BAS", "GST"],
+      "sections": [
+        {
+          "document": "FIN121",
+          "section": "Income taxes",
+          "pdf_pages": [69, 88],
+          "search_terms": ["income taxes", "current tax", "deferred tax", "tax base", "temporary difference", "tax payable", "tax receivable"]
+        }
+      ]
+    },
+    {
+      "topic_id": "fair_value_valuation",
+      "label": "Fair value, NAV, and valuation boundary",
+      "use_when": "Client pack has market value statements, NAV, valuation reports, investment fair values, or questions about whether valuation movements should be posted.",
+      "triggers": ["fair value", "market value", "NAV", "valuation", "recoverable amount", "unit price", "investment value", "holding statement"],
+      "sections": [
+        {
+          "document": "FIN121",
+          "section": "Fair value and measurement topics",
+          "pdf_pages": [73, 78],
+          "search_terms": ["fair value", "fair value measurement", "market participant", "valuation"]
+        },
+        {
+          "document": "MAAF121",
+          "section": "Business valuation and investment analysis",
+          "pdf_pages": [190, 205],
+          "search_terms": ["valuation", "cash flows", "discount rate", "investment decision"]
+        }
+      ]
+    },
+    {
+      "topic_id": "ppe_depreciation_impairment",
+      "label": "PPE, depreciation, and impairment",
+      "use_when": "Client pack has fixed assets, depreciation, disposal of assets, impairment indicators, recoverable amount, or capital expenditure vs repairs questions.",
+      "triggers": ["property, plant and equipment", "PPE", "fixed asset", "depreciation", "impairment", "recoverable amount", "capital expenditure", "disposal"],
+      "sections": [
+        {
+          "document": "FIN121",
+          "section": "PPE and impairment topics",
+          "pdf_pages": [83, 94],
+          "search_terms": ["property, plant and equipment", "depreciation", "impairment", "recoverable amount", "disposal"]
+        }
+      ]
+    },
+    {
+      "topic_id": "leases",
+      "label": "Leases",
+      "use_when": "Client has lease agreements, right-of-use assets, lease liabilities, rent prepayments, or lease interest/depreciation questions.",
+      "triggers": ["lease", "right-of-use", "ROU", "lease liability", "rent", "lessor", "lessee"],
+      "sections": [
+        {
+          "document": "FIN121",
+          "section": "Lease accounting topics",
+          "pdf_pages": [202, 217],
+          "search_terms": ["leases", "right-of-use", "lease liability", "lessee", "lessor"]
+        }
+      ]
+    },
+    {
+      "topic_id": "provisions_contingencies",
+      "label": "Provisions and contingencies",
+      "use_when": "Client has accruals, provisions, legal claims, uncertain obligations, make-good, warranties, or contingent liabilities/assets.",
+      "triggers": ["provision", "contingent liability", "contingent asset", "present obligation", "probable", "warranty", "make good", "legal claim"],
+      "sections": [
+        {
+          "document": "FIN121",
+          "section": "Provisions and contingencies",
+          "pdf_pages": [69, 78],
+          "search_terms": ["provisions", "contingent liabilities", "present obligation", "probable", "reliable estimate"]
+        }
+      ]
+    },
+    {
+      "topic_id": "financial_instruments_debt_equity",
+      "label": "Financial instruments, debt, equity, and loans",
+      "use_when": "Client has loans, notes, debt/equity classification, interest, financial assets/liabilities, amortised cost, or related-party funding.",
+      "triggers": ["financial instrument", "loan", "debt", "equity", "amortised cost", "interest", "borrowings", "share capital", "director loan", "shareholder loan"],
+      "sections": [
+        {
+          "document": "FIN121",
+          "section": "Financial instruments and equity/debt topics",
+          "pdf_pages": [74, 88],
+          "search_terms": ["financial instruments", "financial asset", "financial liability", "amortised cost", "equity instrument", "debt"]
+        },
+        {
+          "document": "MAAF121",
+          "section": "Funding and capital structure",
+          "pdf_pages": [103, 109],
+          "search_terms": ["funding", "debt", "equity", "capital structure", "interest rate risk"]
+        }
+      ]
+    },
+    {
+      "topic_id": "inventory_cogs_working_capital",
+      "label": "Inventory, COGS, and working capital",
+      "use_when": "Trading-business client has stock, purchases, cost of sales, inventory valuation, debtor/creditor ageing, or working-capital movements.",
+      "triggers": ["inventory", "inventories", "stock", "COGS", "cost of sales", "purchases", "working capital", "creditors", "debtors", "stocktake"],
+      "sections": [
+        {
+          "document": "FIN121",
+          "section": "Inventory and current asset references",
+          "pdf_pages": [69, 75],
+          "search_terms": ["inventory", "inventories", "cost of sales", "net realisable value"]
+        },
+        {
+          "document": "MAAF121",
+          "section": "Working capital management",
+          "pdf_pages": [105, 142],
+          "search_terms": ["working capital", "inventory", "receivables", "payables", "cash conversion"]
+        }
+      ]
+    },
+    {
+      "topic_id": "cash_flow_statement",
+      "label": "Cash flow statement and cash movement classification",
+      "use_when": "Client work involves operating/investing/financing cash flow analysis or explaining cash movement categories.",
+      "triggers": ["cash flow", "operating activities", "investing activities", "financing activities", "statement of cash flows"],
+      "sections": [
+        {
+          "document": "FIN121",
+          "section": "Statement of cash flows references",
+          "pdf_pages": [79, 88],
+          "search_terms": ["statement of cash flows", "operating activities", "investing activities", "financing activities"]
+        }
+      ]
+    },
+    {
+      "topic_id": "consolidation_group_investments",
+      "label": "Consolidation, subsidiaries, associates, and group investments",
+      "use_when": "Client has subsidiaries, associates, joint ventures, consolidation adjustments, equity-accounted investments, or group balances.",
+      "triggers": ["consolidation", "subsidiary", "associate", "joint venture", "equity accounting", "non-controlling interest", "group", "control"],
+      "sections": [
+        {
+          "document": "FIN121",
+          "section": "Consolidation and equity accounting topics",
+          "pdf_pages": [225, 255],
+          "search_terms": ["consolidated financial statements", "control", "subsidiary", "associate", "equity accounting", "joint venture"]
+        }
+      ]
+    },
+    {
+      "topic_id": "funding_hedging_risk",
+      "label": "Funding, hedging, and financial risk",
+      "use_when": "Client has hedges, derivatives, forward contracts, treasury risks, interest-rate risk, or funding strategy evidence.",
+      "triggers": ["hedge", "derivative", "forward exchange", "FEC", "interest rate risk", "treasury", "risk management", "swap"],
+      "sections": [
+        {
+          "document": "MAAF121",
+          "section": "Financial risk management and hedging",
+          "pdf_pages": [124, 129],
+          "search_terms": ["hedging", "forward exchange contract", "interest rate risk", "exchange rate risk", "derivative"]
+        }
+      ]
+    }
+  ]
+}

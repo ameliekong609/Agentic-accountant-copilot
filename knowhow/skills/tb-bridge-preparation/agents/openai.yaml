@@ -1,0 +1,3 @@
+interface:
+  display_name: "TB Bridge Preparation"
+  short_description: "Prepare accountant-style TB bridges"

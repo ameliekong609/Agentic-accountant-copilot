@@ -16,9 +16,6 @@ dependencies = [
 dev = [
   "pytest>=8.0",
 ]
-ui = [
-  "streamlit>=1.36",
-]
 
 [project.scripts]
 accountant-copilot = "accountant_copilot.cli:main"

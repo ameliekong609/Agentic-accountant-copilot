@@ -1,0 +1,3 @@
+display_name: Accounting PDF Knowledge Retrieval
+short_description: Finds and reads the right local CA knowhow PDF sections on demand.
+default_prompt: Use the PDF topic map to retrieve original accounting guidance only when a client workpaper topic needs it. Do not treat the books as client evidence.
