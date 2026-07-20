@@ -26,7 +26,7 @@ from accountant_copilot.senior_review import (
     _turing_review_is_ready,
     _turing_review_needs_corrections,
 )
-from accountant_copilot.tb_bridge_workflow import TB_BRIDGE_JSON, TB_BRIDGE_MD, TB_BRIDGE_XLSX
+from accountant_copilot.contract_utils import TB_BRIDGE_JSON, TB_BRIDGE_MD, TB_BRIDGE_XLSX
 
 def _prepare_workpaper_update_run_context(artifact_dir: Path, *, entity_name: str | None, fy_start: str | None, fy_end: str | None) -> None:
     context = {

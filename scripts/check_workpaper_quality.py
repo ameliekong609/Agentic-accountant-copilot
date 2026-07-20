@@ -21,12 +21,9 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from accountant_copilot.tb_bridge_workflow import (  # noqa: E402
-    TB_BRIDGE_JSON,
-    TB_BRIDGE_XLSX,
-    validate_relationship_register,
-    validate_tb_bridge_workpaper,
-)
+from accountant_copilot.contract_utils import TB_BRIDGE_JSON, TB_BRIDGE_XLSX  # noqa: E402
+from accountant_copilot.relationship_contract import validate_relationship_register  # noqa: E402
+from accountant_copilot.tb_bridge_contract import validate_tb_bridge_workpaper  # noqa: E402
 
 
 EXPECTED_SHEETS = {"TB Bridge", "Movement Notes", "Evidence Index"}

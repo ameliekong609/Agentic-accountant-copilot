@@ -33,8 +33,8 @@ from accountant_copilot.common import (
     _write_step_progress,
 )
 from accountant_copilot.document_indexing import _document_text_for_codex, _source_coverage_facts
-from accountant_copilot.tb_bridge_workflow import (
-    RELATIONSHIP_REASONING_CONTRACT_VERSION,
+from accountant_copilot.contract_utils import RELATIONSHIP_REASONING_CONTRACT_VERSION
+from accountant_copilot.relationship_contract import (
     build_relationship_reasoning_prompt,
     failed_relationship_register,
     format_relationship_register,

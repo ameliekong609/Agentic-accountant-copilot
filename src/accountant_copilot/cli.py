@@ -32,7 +32,7 @@ from accountant_copilot.tb_bridge_runner import (
     _build_coa_mapping_workpaper_command,
     _validate_coa_mapping_workpaper,
 )
-from accountant_copilot.tb_bridge_workflow import TB_BRIDGE_JSON, TB_BRIDGE_OUTPUT_DIR, TB_BRIDGE_XLSX
+from accountant_copilot.contract_utils import TB_BRIDGE_JSON, TB_BRIDGE_OUTPUT_DIR, TB_BRIDGE_XLSX
 from accountant_copilot.workpaper_orchestrator import prepare_workpaper_command
 
 

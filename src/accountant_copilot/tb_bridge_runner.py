@@ -30,18 +30,22 @@ from accountant_copilot.prior_fs import (
     _format_prior_statement_coa_import,
 )
 from accountant_copilot.senior_review import _review_correction_findings
-from accountant_copilot.tb_bridge_workflow import (
+from accountant_copilot.contract_utils import (
     TB_BRIDGE_CONTRACT_VERSION,
     TB_BRIDGE_JSON,
     TB_BRIDGE_MD,
     TB_BRIDGE_XLSX,
+)
+from accountant_copilot.tb_bridge_contract import (
     build_tb_bridge_prompt,
     enrich_tb_bridge_payload_for_workbook,
     failed_tb_bridge_workpaper,
     format_tb_bridge_workpaper,
     normalise_tb_bridge_workpaper,
-    repair_tb_bridge_workbook_hyperlinks,
     validate_tb_bridge_workpaper,
+)
+from accountant_copilot.workbook_builder import (
+    repair_tb_bridge_workbook_hyperlinks,
     write_tb_bridge_workbook_builder,
 )
 

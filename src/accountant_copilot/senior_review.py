@@ -23,9 +23,7 @@ from accountant_copilot.common import (
     _normalise_codex_cli_command,
     _write_codex_attempt_history,
 )
-from accountant_copilot.tb_bridge_workflow import (
-    TB_BRIDGE_JSON,
-    TB_BRIDGE_XLSX,
+from accountant_copilot.accounting_knowledge import (
     accounting_pdf_retrieval_tool_for_prompt,
     client_evidence_guardrail_for_prompt,
     load_accounting_pdf_topic_map_for_prompt,
@@ -34,6 +32,7 @@ from accountant_copilot.tb_bridge_workflow import (
     non_client_evidence_reference_findings,
     source_of_truth_redo_instruction,
 )
+from accountant_copilot.contract_utils import TB_BRIDGE_JSON, TB_BRIDGE_XLSX
 
 def _turing_review_needs_corrections(output_dir: Path) -> bool:
     review_json = output_dir / "turing_senior_review.json"
