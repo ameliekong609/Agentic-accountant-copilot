@@ -75,7 +75,7 @@ echo "$pid" > "$JOB_DIR/pid"
 
 watcher_pid=""
 if [ "${ACCOUNTANT_COPILOT_TELEGRAM_NOTIFY:-1}" != "0" ]; then
-  telegram_chat_id="${ACCOUNTANT_COPILOT_TELEGRAM_CHAT_ID:-${HERMES_SESSION_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}}"
+  telegram_chat_id="${ACCOUNTANT_COPILOT_TELEGRAM_CHAT_ID:-${TELEGRAM_CHAT_ID:-}}"
   if [ -n "$telegram_chat_id" ]; then
     watcher_pid="$(
       REPO_ROOT="$REPO_ROOT" JOB_ID="$JOB_ID" JOB_DIR="$JOB_DIR" python3 - <<'PY'
