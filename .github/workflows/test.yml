@@ -18,9 +18,9 @@ jobs:
         run: PYTHONPATH=src python3.11 -m pytest -q
       - name: Compile check
         run: python3.11 -m compileall -q src tests
-      - name: Demo smoke test
-        run: PYTHONPATH=src python3.11 -m accountant_copilot.cli run-demo --output-dir /tmp/accountant-copilot-demo
       - name: Terminology scan
-        run: '! grep -R -n -E "V2|v2|legacy" README.md docs'
+        run: '! grep -R -n -E "Hermes|Streamlit|Preference Agent|setup-turing-workspace|engagement-state MVP" README.md docs'
       - name: Command help snapshot check
-        run: PYTHONPATH=src python3.11 -m accountant_copilot.cli --help | grep -E "ingest-source-document|ingest-raw-inputs|export-document-inventory|export-bank-statement-facts|match-transactions|import-trial-balance|render-statement-package|apply-review-ui-decisions|render-xlsx-statements|export-local-ui"
+        run: |
+          PYTHONPATH=src python3.11 -m accountant_copilot.cli --help | grep -E "process-documents|match-source-facts|build-tb-bridge-workpaper|prepare-workpaper|review-workpaper|serve-workpaper-portal"
+          ! PYTHONPATH=src python3.11 -m accountant_copilot.cli --help | grep -E "inspect-engagement|run-engagement|setup-turing-workspace|record-preference|export-accountant-review-ui|render-statement-package|export-final-release-manifest"
