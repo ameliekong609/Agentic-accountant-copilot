@@ -618,6 +618,7 @@ def test_codex_relationship_reasoning_validates_document_refs(tmp_path: Path):
 
 def test_codex_relationship_reasoning_retries_with_validation_feedback(tmp_path: Path, monkeypatch):
     from accountant_copilot import cli
+    import accountant_copilot.relationship_reasoning as relationship_reasoning
 
     source_index_path = tmp_path / "source_document_index.json"
     _write_source_index(source_index_path)
@@ -637,7 +638,7 @@ def test_codex_relationship_reasoning_retries_with_validation_feedback(tmp_path:
             payload["relationships"][0]["document_refs"] = ["raw_missing"]
         return payload, None
 
-    monkeypatch.setattr(cli, "_codex_investigate_source_matches", fake_codex)
+    monkeypatch.setattr(relationship_reasoning, "_codex_investigate_source_matches", fake_codex)
     result = cli._match_source_facts_from_accounting_command(
         argparse.Namespace(
             accounting_facts=str(source_index_path),
@@ -661,6 +662,7 @@ def test_codex_relationship_reasoning_retries_with_validation_feedback(tmp_path:
 
 def test_codex_tb_bridge_workpaper_builds_matrix_from_relationships(tmp_path: Path, monkeypatch):
     from accountant_copilot import cli
+    import accountant_copilot.tb_bridge_runner as tb_bridge_runner
 
     relationship_path, source_index_path, prior_coa_path = _write_step4_inputs(tmp_path)
     output_dir = tmp_path / "step4"
@@ -785,7 +787,7 @@ def test_codex_tb_bridge_workpaper_builds_matrix_from_relationships(tmp_path: Pa
             "workpaper_notes": ["Bridge matrix, not final posting."],
         }, None
 
-    monkeypatch.setattr(cli, "_codex_map_coa_from_events", fake_codex)
+    monkeypatch.setattr(tb_bridge_runner, "_codex_map_coa_from_events", fake_codex)
     result = cli._build_coa_mapping_workpaper_command(
         argparse.Namespace(
             artifact_dir=str(tmp_path),

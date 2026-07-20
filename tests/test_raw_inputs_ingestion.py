@@ -170,7 +170,7 @@ def test_process_documents_force_reprocess_ignores_existing_cache(tmp_path: Path
 
 
 def test_process_documents_recovery_attempt_passes_failure_context_and_increases_timeout(tmp_path: Path, monkeypatch):
-    import accountant_copilot.cli as cli
+    import accountant_copilot.document_indexing as document_indexing
 
     input_dir = tmp_path / "inputs"
     input_dir.mkdir()
@@ -189,7 +189,7 @@ def test_process_documents_recovery_attempt_passes_failure_context_and_increases
             "document_summary": "Recovered large source document.",
         }, None
 
-    monkeypatch.setattr(cli, "_codex_process_document", fake_codex_process_document)
+    monkeypatch.setattr(document_indexing, "_codex_process_document", fake_codex_process_document)
     args = Namespace(input_dir=str(input_dir), artifact_dir=str(artifact_dir), codex_command="codex", codex_timeout=5, codex_max_attempts=3, force_reprocess=True)
 
     assert _process_documents_command(args) == 0
